@@ -1,5 +1,7 @@
 #include "net_uv.h"
 
+#define PORT 49152
+
 void on_send(uv_udp_send_t* req, int status) {
     (void)req;
 
@@ -99,25 +101,32 @@ int init_net(Net* net) {
     strcpy(&ip[ip_end_idx], ip_iid);
     printf("ip: %s\n", ip);
     net->ip_mine = malloc(sizeof(struct sockaddr_in6));
-    ret = uv_ip6_addr(ip, 12361, net->ip_mine);
+    //ret = uv_ip6_addr(ip, PORT, net->ip_mine);
+    ret = uv_ip6_addr("::", PORT, net->ip_mine);
     if (ret) {
         fprintf(stderr, "Ip error 1: %s\n", uv_strerror(ret));
         return 1;
     }
 
-    net->ip_opponent = malloc(sizeof(struct sockaddr_in6));
+    char opp_ip[128];
     printf("enter opponent ip: ");
-    fgets(ip, 128, stdin);
-    char* ipptr = trim(ip);
+    fgets(opp_ip, 128, stdin);
+    char* ipptr = trim(opp_ip);
     if (ipptr[0]) {
-        ret = uv_ip6_addr(ipptr, 12361, net->ip_opponent);
-        if (ret) {
-            fprintf(stderr, "Ip error 2: %s\n", uv_strerror(ret));
-            return 1;
-        }
+        net->ip_opponent = malloc(sizeof(struct sockaddr_in6));
+        ret = uv_ip6_addr(ipptr, PORT, net->ip_opponent);
     } else {
-        uv_ip6_addr("0:0:0:0:0:0:0:1", 12361, net->ip_mine);
-        uv_ip6_addr("0:0:0:0:0:0:0:1", 12361, net->ip_opponent);
+        printf("local address\n");
+        //net->ip_opponent = net->ip_mine;
+        //net->ip_mine = malloc(sizeof(struct sockaddr_in6));
+        //uv_ip6_addr("0:0:0:0:0:0:0:1", PORT, net->ip_mine);
+        
+        net->ip_opponent = malloc(sizeof(struct sockaddr_in6));
+        ret = uv_ip6_addr(ip, PORT, net->ip_opponent);
+    }
+    if (ret) {
+        fprintf(stderr, "Ip error 2: %s\n", uv_strerror(ret));
+        return 1;
     }
 
     // open connection --------------------------------------------------------
@@ -128,23 +137,25 @@ int init_net(Net* net) {
         return 1;
     }
     ret = uv_udp_init(&net->loop, &net->send_socket);
-    if (ret) {
-        fprintf(stderr, "init error 2: %s\n", uv_strerror(ret));
-        return 1;
-    }
+    if (ret) { fprintf(stderr, "init error 2: %s\n", uv_strerror(ret)); return 1; }
+
     ret = uv_udp_bind(&net->recv_socket, (const struct sockaddr*)net->ip_mine, UV_UDP_IPV6ONLY | UV_UDP_REUSEADDR);
-    if (ret < 0) {
-        fprintf(stderr, "bind error: %s\n", uv_strerror(ret));
-        return 1;
-    }
+    if (ret < 0) { fprintf(stderr, "bind error 1: %s\n", uv_strerror(ret)); return 1; }
+
+    //ret = uv_udp_bind(&net->send_socket, (const struct sockaddr*)net->ip_opponent, UV_UDP_IPV6ONLY);
+    //if (ret < 0) { fprintf(stderr, "bind error 2: %s\n", uv_strerror(ret)); return 1; }
+
+    ret = uv_udp_connect(&net->send_socket, (const struct sockaddr*)net->ip_opponent);
+    if (ret < 0) { fprintf(stderr, "connect error 1: %s\n", uv_strerror(ret)); return 1; }
 
     return 0;
 }
 
 int send_message(Net* net, Message* message) {
     uv_buf_t send_buf = uv_buf_init((char*)message, sizeof(Message));
-    int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, (const struct sockaddr*)net->ip_opponent);
-    if (ret < 0) {
+    //int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, (const struct sockaddr*)net->ip_opponent);
+    int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, NULL);
+    if (ret != sizeof(Message)) {
         fprintf(stderr, "Send error: %s\n", uv_strerror(ret));
         return 1;
     }
