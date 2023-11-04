@@ -1,7 +1,7 @@
 .PHONY: run build san debug
 
-BASE_FLAGS := -O2 -Wall -Wextra -Wpedantic -Wuninitialized -fno-strict-aliasing -ogame -lraylib -lm -luv 
-FILES := net.c game.c
+BASE_FLAGS := -O2 -Wall -Wextra -Wpedantic -Wuninitialized -fno-strict-aliasing -ogame -lraylib -lm -luv
+FILES := net_uv.c game.c
 
 build:
 	gcc $(FILES) $(BASE_FLAGS)

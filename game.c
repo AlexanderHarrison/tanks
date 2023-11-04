@@ -6,7 +6,7 @@
 #include <raylib.h>
 
 #include "game.h"
-#include "net.h"
+#include "net_uv.h"
 
 int main(void) {
     Net net;

@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <raylib.h>
+#include <net/if.h>
 
 typedef struct {
     uv_loop_t loop;
