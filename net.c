@@ -76,23 +76,22 @@ int init_net(Net* net) {
         if (!interfaces[i].is_internal) {
             if (strncmp(interfaces[i].name, "wlan", 4) != 0) {
                 printf("  valid ip\n");
-                net->ip_mine = &interfaces[i].address.address4;
+                net->ip_mine = &interfaces[i].address.address6;
                 found_interface = 1;
             }
         }
     }
-    return 1;
     uv_free_interface_addresses(interfaces, count);
     if (!found_interface) {
         fprintf(stderr, "no interface\n");
         return 1;
     }
     char my_ip[64];
-    uv_ip4_name(net->ip_mine, my_ip, 64);
+    uv_ip6_name(net->ip_mine, my_ip, 64);
     printf("user ip: %s\n", my_ip);
 
     net->ip_mine = malloc(sizeof(struct sockaddr_in));
-    ret = uv_ip4_addr(my_ip, 12361, net->ip_mine);
+    ret = uv_ip6_addr(my_ip, 12361, net->ip_mine);
     if (ret) {
         fprintf(stderr, "Ip error 1: %s\n", uv_strerror(ret));
         return 1;
@@ -104,13 +103,13 @@ int init_net(Net* net) {
     fgets(ip, 64, stdin);
     char* ipptr = trim(ip);
     if (ipptr[0]) {
-        ret = uv_ip4_addr(ipptr, 12361, net->ip_opponent);
+        ret = uv_ip6_addr(ipptr, 12361, net->ip_opponent);
         if (ret) {
             fprintf(stderr, "Ip error 2: %s\n", uv_strerror(ret));
             return 1;
         }
     } else {
-        uv_ip4_addr(my_ip, 12361, net->ip_opponent);
+        uv_ip6_addr(my_ip, 12361, net->ip_opponent);
     }
 
     // open connection --------------------------------------------------------

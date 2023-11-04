@@ -9,8 +9,8 @@
 
 typedef struct {
     uv_loop_t loop;
-    struct sockaddr_in* ip_mine;
-    struct sockaddr_in* ip_opponent;
+    struct sockaddr_in6* ip_mine;
+    struct sockaddr_in6* ip_opponent;
 
     uv_udp_t send_socket;
     uv_udp_t recv_socket;
