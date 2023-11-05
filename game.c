@@ -24,33 +24,53 @@ int main(void) {
     Opponent opponent = default_opponent;
 
     while (!WindowShouldClose()) {
+        Message my_message = {
+            .next_message = NULL,
+            .frame = frame_num,
+        };
+
         // update ----------------------------------------------------
 
-        update_player(&player);
+        update_player(&player, &my_message);
         update_bullet_positions();
 
         // networking woah!!! ---------------------------------------
 
-        Message my_message = {
-            .next_message = NULL,
-            .frame = frame_num,
-            .position = player.position,
-            .angle = player.angle
-        };
         send_message(&net, &my_message);
 
         Message* opp_message = check_messages(&net);
         if (opp_message != NULL) {
-            while (opp_message->next_message != NULL) {
+            while (1) {
+                if (opp_message->spawned_bullet) {
+                    int frames_behind = frame_num - opp_message->frame;
+                    BulletSpawnMessage bullet_message = opp_message->new_bullet;
+                    Bullet new_bullet = {
+                        .position = swap_orientation(bullet_message.position),
+                        .update_vector = {
+                            .x = -bullet_message.update_vector.x,
+                            .y = -bullet_message.update_vector.y,
+                        },
+                        .size = bullet_message.size,
+                        .damage = bullet_message.damage,
+                    };
+
+                    // TODO
+                    for (int i = 0; i < frames_behind; ++i) {
+                        new_bullet.position = vector2_add(new_bullet.position, new_bullet.update_vector);
+                    }
+                    spawn_bullet(new_bullet);
+                }
+
+                if (opp_message->next_message == NULL) { break; }
+
                 Message* prev = opp_message;
                 opp_message = opp_message->next_message;
                 free(prev);
             }
 
-            Vector2 opp_pos = opp_message->position;
-            opponent.position.x = SCREEN_WIDTH - opp_pos.x;
-            opponent.position.y = SCREEN_HEIGHT - opp_pos.y;
-            opponent.angle = opp_message->angle + 180.0f;
+            Vector2 opp_pos = opp_message->player_position;
+            opponent.position = swap_orientation(opp_pos);
+            opponent.angle = opp_message->player_angle + 180.0f;
             if (opponent.angle >= 360.0f) opponent.angle -= 360.0f;
             free(opp_message);
         }
@@ -90,7 +110,7 @@ int main(void) {
     return 0;
 }
 
-void update_player(Player* player) {
+void update_player(Player* player, Message* message) {
     // values -----------------------------------------------------------------------
 
     if (IsKeyDown(KEY_W)) player->velocity += player->acceleration;
@@ -122,6 +142,9 @@ void update_player(Player* player) {
     player->position.x = clamp(player->position.x, 0, SCREEN_WIDTH);
     player->position.y = clamp(player->position.y, 0, SCREEN_HEIGHT);
 
+    message->player_position = player->position;
+    message->player_angle = player->angle;
+
     // bullets -----------------------------------------------------------------------
 
     if (player->bullet_timer != 0) {
@@ -138,6 +161,14 @@ void update_player(Player* player) {
                 .damage = 20,
             };
 
+            message->spawned_bullet = true;
+            BulletSpawnMessage spawned = {
+                .position = new_bullet.position,
+                .update_vector = new_bullet.update_vector,
+                .size = new_bullet.size,
+                .damage = new_bullet.damage,
+            };
+            message->new_bullet = spawned;
             spawn_bullet(new_bullet);
             player->bullet_timer = player->bullet_cooldown;
         }

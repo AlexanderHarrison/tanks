@@ -3,10 +3,12 @@
 #include <uv.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
 #include <raylib.h>
 #include <net/if.h>
+#include <time.h>
 
 typedef struct {
     uv_loop_t loop;
@@ -19,11 +21,21 @@ typedef struct {
     uv_udp_t recv_socket;
 } Net;
 
+typedef struct {
+    Vector2 position;
+    Vector2 update_vector;
+    float size;
+    float damage;
+} BulletSpawnMessage;
+
 typedef struct Message {
     struct Message* next_message;
     uint64_t frame;
-    Vector2 position;
-    float angle;
+    Vector2 player_position;
+    float player_angle;
+
+    bool spawned_bullet;
+    BulletSpawnMessage new_bullet;
 } Message;
 
 int init_net(Net* net);

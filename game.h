@@ -1,5 +1,7 @@
 #pragma once
 
+#include "net_uv.h"
+
 #define SCREEN_WIDTH 800
 #define SCREEN_HEIGHT 800
 
@@ -39,7 +41,15 @@ Player default_player = {
     .bullet_timer = 3
 };
 
-void update_player(Player* player);
+void update_player(Player* player, Message* message);
+
+Vector2 swap_orientation(Vector2 point) {
+    Vector2 transformed = {
+        .x = SCREEN_WIDTH - point.x,
+        .y = SCREEN_HEIGHT - point.y
+    };
+    return transformed;
+}
 
 // Opponent ----------------------------------------------------------
 

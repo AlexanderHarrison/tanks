@@ -61,6 +61,32 @@ void alloc_buffer(uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
     *buf = uv_buf_init((char*)malloc(suggested_size), suggested_size);
 }
 
+// returns a pointer to a linked list of messages in the order they were captured.
+// or null if there are no messages;
+// you are now in charge of freeing them.
+Message* check_messages(Net* net) {
+    uv_udp_recv_start(&net->recv_socket, alloc_buffer, on_recv);
+    uv_run(&net->loop, UV_RUN_NOWAIT);
+    Message* queue = message_queue;
+    message_queue = NULL;
+    message_tail = NULL;
+    return queue;
+}
+
+int send_message(Net* net, Message* message) {
+    uv_buf_t send_buf = uv_buf_init((char*)message, sizeof(Message));
+    //int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, (const struct sockaddr*)net->ip_opponent);
+    //int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, NULL);
+    int ret = uv_udp_try_send(&net->recv_socket, &send_buf, 1, NULL);
+    if (ret != sizeof(Message)) {
+        fprintf(stderr, "Send error: %s\n", uv_strerror(ret));
+        return 1;
+    }
+
+    return 0;
+}
+
+
 int init_net(Net* net) {
     int ret;
 
@@ -91,14 +117,6 @@ int init_net(Net* net) {
         return 1;
     }
 
-    //int ip_end_idx = 0;
-    //while (ip[ip_end_idx]) { ++ip_end_idx; }
-    //ip[ip_end_idx] = '%';
-    //++ip_end_idx;
-    //char ip_iid[64];
-    //size_t len = sizeof(ip_iid);
-    //uv_if_indextoiid(interface_idx, ip_iid, &len);
-    //strcpy(&ip[ip_end_idx], ip_iid);
     printf("ip: %s\n", ip);
     net->ip_mine = malloc(sizeof(struct sockaddr_in));
     //ret = uv_ip4_addr(ip, PORT, net->ip_mine);
@@ -139,6 +157,19 @@ int init_net(Net* net) {
 
     ret = uv_udp_connect(&net->recv_socket, (const struct sockaddr*)net->ip_opponent);
     if (ret < 0) { fprintf(stderr, "connect error 1: %s\n", uv_strerror(ret)); return 1; }
+
+    // syncronize programs -------------------------------------------------
+
+    // first message is just timing.
+    Message null;
+    send_message(net, &null);
+    struct timespec t = {
+        .tv_sec = 0,
+        .tv_nsec = 10000000L
+    };
+    while (check_messages(net) == NULL) {
+        nanosleep(&t, NULL);
+    }
 
     return 0;
 }
@@ -224,31 +255,6 @@ int init_net(Net* net) {
 //
 //    return 0;
 //}
-
-int send_message(Net* net, Message* message) {
-    uv_buf_t send_buf = uv_buf_init((char*)message, sizeof(Message));
-    //int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, (const struct sockaddr*)net->ip_opponent);
-    //int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, NULL);
-    int ret = uv_udp_try_send(&net->recv_socket, &send_buf, 1, NULL);
-    if (ret != sizeof(Message)) {
-        fprintf(stderr, "Send error: %s\n", uv_strerror(ret));
-        return 1;
-    }
-
-    return 0;
-}
-
-// returns a pointer to a linked list of messages in the order they were captured.
-// or null if there are no messages;
-// you are now in charge of freeing them.
-Message* check_messages(Net* net) {
-    uv_udp_recv_start(&net->recv_socket, alloc_buffer, on_recv);
-    uv_run(&net->loop, UV_RUN_NOWAIT);
-    Message* queue = message_queue;
-    message_queue = NULL;
-    message_tail = NULL;
-    return queue;
-}
 
 void close_handles(uv_handle_t *handle, void *arg) {
     (void)arg;
