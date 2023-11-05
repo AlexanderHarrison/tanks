@@ -1,6 +1,6 @@
 #include "net_uv.h"
 
-#define PORT 49152
+#define PORT 49069
 
 void on_send(uv_udp_send_t* req, int status) {
     (void)req;
@@ -101,7 +101,8 @@ int init_net(Net* net) {
     //strcpy(&ip[ip_end_idx], ip_iid);
     printf("ip: %s\n", ip);
     net->ip_mine = malloc(sizeof(struct sockaddr_in));
-    ret = uv_ip4_addr(ip, PORT, net->ip_mine);
+    //ret = uv_ip4_addr(ip, PORT, net->ip_mine);
+    ret = uv_ip4_addr("0.0.0.0", PORT, net->ip_mine);
     if (ret) {
         fprintf(stderr, "Ip error 1: %s\n", uv_strerror(ret));
         return 1;
