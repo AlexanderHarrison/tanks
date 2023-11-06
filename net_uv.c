@@ -116,13 +116,11 @@ int init_net(Net* net) {
         uv_ip4_name(&interfaces[i].address.address4, ip, 128);
         printf("       ip: %s\n", ip);
         if (!interfaces[i].is_internal) {
-            if (strncmp(interfaces[i].name, "wlan", 4) != 0) {
-                uv_ip4_name(&interfaces[i].address.address4, ip, 128);
-                if (strlen(ip) < 12) { continue; } // avoid 0.0.0.0
-                interface_idx = if_nametoindex(interfaces[i].name);
-                net->ip_mine = &interfaces[i].address.address4;
-                break;
-            }
+            uv_ip4_name(&interfaces[i].address.address4, ip, 128);
+            if (strlen(ip) < 12) { continue; } // avoid 0.0.0.0
+            interface_idx = if_nametoindex(interfaces[i].name);
+            net->ip_mine = &interfaces[i].address.address4;
+            break;
         }
     }
     uv_free_interface_addresses(interfaces, count);
