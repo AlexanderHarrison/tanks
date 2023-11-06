@@ -112,10 +112,13 @@ int init_net(Net* net) {
     int interface_idx = 0;
     char ip[128];
     for (int i = 0; i < count; ++i) {
+        printf("interface: %s\n", interfaces[i].name);
+        uv_ip4_name(&interfaces[i].address.address4, ip, 128);
+        printf("       ip: %s\n", ip);
         if (!interfaces[i].is_internal) {
             if (strncmp(interfaces[i].name, "wlan", 4) != 0) {
                 uv_ip4_name(&interfaces[i].address.address4, ip, 128);
-                if (strlen(ip) < 12) { continue; }
+                if (strlen(ip) < 12) { continue; } // avoid 0.0.0.0
                 interface_idx = if_nametoindex(interfaces[i].name);
                 net->ip_mine = &interfaces[i].address.address4;
                 break;
@@ -181,9 +184,11 @@ int init_net(Net* net) {
         .tv_sec = 0,
         .tv_nsec = 10000000L
     };
-    while (check_messages(net) == NULL) {
+    Message* m = check_messages(net);
+    while (m == NULL) {
         nanosleep(&t, NULL);
     }
+    printf("angle %f\n", m->player_angle);
     printf("received sync message\n");
 
     return 0;
