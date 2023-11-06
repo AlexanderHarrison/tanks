@@ -5,6 +5,8 @@
 void on_send(uv_udp_send_t* req, int status) {
     (void)req;
 
+    printf("sent\n");
+
     if (status) {
         fprintf(stderr, "Send error: %s\n", uv_strerror(status));
         return;
@@ -16,6 +18,8 @@ Message* message_tail = NULL;
 void on_recv(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf, const struct sockaddr* addr, unsigned flags) {
     (void)flags;
     (void)addr;
+
+    printf("received\n");
 
     if (nread == sizeof(Message)) {
         if (message_tail != NULL) {
@@ -73,15 +77,22 @@ Message* check_messages(Net* net) {
     return queue;
 }
 
+uv_udp_send_t send_req;
 int send_message(Net* net, Message* message) {
     uv_buf_t send_buf = uv_buf_init((char*)message, sizeof(Message));
-    //int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, (const struct sockaddr*)net->ip_opponent);
-    //int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, NULL);
-    int ret = uv_udp_try_send(&net->recv_socket, &send_buf, 1, NULL);
-    if (ret != sizeof(Message)) {
+    int ret = uv_udp_send(&send_req, &net->recv_socket, &send_buf, 1, NULL, on_send);
+    if (ret < 0) {
         fprintf(stderr, "Send error: %s\n", uv_strerror(ret));
         return 1;
     }
+
+    //int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, (const struct sockaddr*)net->ip_opponent);
+    //int ret = uv_udp_try_send(&net->send_socket, &send_buf, 1, NULL);
+    //int ret = uv_udp_try_send(&net->recv_socket, &send_buf, 1, NULL);
+    //if (ret != sizeof(Message)) {
+    //    fprintf(stderr, "Send error: %s\n", uv_strerror(ret));
+    //    return 1;
+    //}
 
     return 0;
 }
@@ -159,10 +170,13 @@ int init_net(Net* net) {
     if (ret < 0) { fprintf(stderr, "connect error 1: %s\n", uv_strerror(ret)); return 1; }
 
     // syncronize programs -------------------------------------------------
+    
+    printf("syncronising\n");
 
     // first message is just timing.
     Message null;
     send_message(net, &null);
+    printf("sent sync message\n");
     struct timespec t = {
         .tv_sec = 0,
         .tv_nsec = 10000000L
@@ -170,6 +184,7 @@ int init_net(Net* net) {
     while (check_messages(net) == NULL) {
         nanosleep(&t, NULL);
     }
+    printf("received sync message\n");
 
     return 0;
 }
