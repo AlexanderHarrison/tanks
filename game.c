@@ -2,101 +2,37 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdint.h>
-#include <math.h>
 #include <raylib.h>
 
 #include "game.h"
-#include "net_uv.h"
+// #include "net_uv.h"
 
 int main(void) {
-    Net net;
-
-    if (init_net(&net)) {
-        printf("ERROR INITIALISING NET\n");
-        return 1;
-    }
-
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Holy Cow! Game!");
     SetTargetFPS(60);
 
     uint64_t frame_num = 0;
-    Player player = default_player;
-    Opponent opponent = default_opponent;
+
+    spawn_enemy(enemy_test((Vector2) { .x = 0.0, .y = 0.0 }));
+    spawn_enemy(enemy_test((Vector2) { .x = 100.0, .y = 0.0 }));
+    spawn_enemy(enemy_test((Vector2) { .x = 200.0, .y = 0.0 }));
 
     while (!WindowShouldClose()) {
-        Message my_message = {
-            .next_message = NULL,
-            .frame = frame_num,
-        };
-
         // update ----------------------------------------------------
 
-        update_player(&player, &my_message);
+        update_player(&player);
         update_bullet_positions();
-
-        // networking woah!!! ---------------------------------------
-
-        send_message(&net, &my_message);
-
-        Message* opp_message = check_messages(&net);
-        if (opp_message != NULL) {
-            while (1) {
-                if (opp_message->spawned_bullet) {
-                    int frames_behind = frame_num - opp_message->frame;
-                    BulletSpawnMessage bullet_message = opp_message->new_bullet;
-                    Bullet new_bullet = {
-                        .position = swap_orientation(bullet_message.position),
-                        .update_vector = {
-                            .x = -bullet_message.update_vector.x,
-                            .y = -bullet_message.update_vector.y,
-                        },
-                        .size = bullet_message.size,
-                        .damage = bullet_message.damage,
-                    };
-
-                    // TODO
-                    for (int i = 0; i < frames_behind; ++i) {
-                        new_bullet.position = vector2_add(new_bullet.position, new_bullet.update_vector);
-                    }
-                    spawn_bullet(new_bullet);
-                }
-
-                if (opp_message->next_message == NULL) { break; }
-
-                Message* prev = opp_message;
-                opp_message = opp_message->next_message;
-                free(prev);
-            }
-
-            Vector2 opp_pos = opp_message->player_position;
-            opponent.position = swap_orientation(opp_pos);
-            opponent.angle = opp_message->player_angle + 180.0f;
-            if (opponent.angle >= 360.0f) opponent.angle -= 360.0f;
-            free(opp_message);
-        }
+        update_enemy_positions();
+        update_enemy_collisions();
 
         // draw ----------------------------------------------------
         BeginDrawing();
 
         ClearBackground(RAYWHITE);
 
-        for (int i = 0; i < bullet_count; ++i) {
-            DrawCircleV(bullets[i].position, bullets[i].size, BLUE);
-        }
-    
-        Color player_colour;
-        if (player.bullet_timer != 0) {
-            player_colour = BLACK;
-        } else {
-            player_colour = MAROON;
-        }
-        DrawCircleV(player.position, 20, player_colour);
-        Vector2 head = vector2_add(player.position, vector2_dir(player.angle, 16)); 
-        DrawCircleV(head, 4, WHITE);
-
-        DrawCircleV(opponent.position, 20, GREEN);
-        Vector2 opp_head = vector2_add(opponent.position, vector2_dir(opponent.angle, 16)); 
-        DrawCircleV(opp_head, 4, WHITE);
+        draw_bullets();
+        draw_player();
+        draw_enemies();
 
         EndDrawing();
 
@@ -105,74 +41,73 @@ int main(void) {
 
     CloseWindow();
 
-    deinit_net(&net);
-
     return 0;
 }
 
-void update_player(Player* player, Message* message) {
+void update_player() {
     // values -----------------------------------------------------------------------
 
-    if (IsKeyDown(KEY_W)) player->velocity += player->acceleration;
-    if (IsKeyDown(KEY_S)) player->velocity -= player->acceleration;
-    if (!IsKeyDown(KEY_W) && !IsKeyDown(KEY_S)) player->velocity = 0.0f;
-    player->velocity = clamp(player->velocity, -player->max_speed, player->max_speed);
+    if (IsKeyDown(KEY_W)) player.velocity += player.acceleration;
+    if (IsKeyDown(KEY_S)) player.velocity -= player.acceleration;
+    if (!IsKeyDown(KEY_W) && !IsKeyDown(KEY_S)) player.velocity = 0.0f;
+    player.velocity = clamp(player.velocity, -player.max_speed, player.max_speed);
 
-    if (IsKeyDown(KEY_A)) player->angle_velocity -= player->angle_acceleration;
-    if (IsKeyDown(KEY_D)) player->angle_velocity += player->angle_acceleration;
-    if (!IsKeyDown(KEY_A) && !IsKeyDown(KEY_D)) player->angle_velocity = 0.0f;
+    if (IsKeyDown(KEY_A)) player.angle_velocity -= player.angle_acceleration;
+    if (IsKeyDown(KEY_D)) player.angle_velocity += player.angle_acceleration;
+    if (!IsKeyDown(KEY_A) && !IsKeyDown(KEY_D)) player.angle_velocity = 0.0f;
 
     float max_angle_speed;
     if (IsKeyDown(KEY_LEFT_SHIFT)) {
-        max_angle_speed = player->angle_max_speed;
+        max_angle_speed = player.angle_max_speed;
     } else {
-        max_angle_speed = player->angle_max_speed_fast;
+        max_angle_speed = player.angle_max_speed_fast;
     }
-    player->angle_velocity = clamp(player->angle_velocity, -max_angle_speed, max_angle_speed);
-    player->angle += player->angle_velocity;
+    player.angle_velocity = clamp(player.angle_velocity, -max_angle_speed, max_angle_speed);
+    player.angle += player.angle_velocity;
 
-    if (player->angle >= 360.0f) player->angle -= 360.0f;
-    if (player->angle < 0.0f) player->angle += 360.0f;
+    if (player.angle >= 360.0f) player.angle -= 360.0f;
+    if (player.angle < 0.0f) player.angle += 360.0f;
 
     // position ----------------------------------------------------------------------
 
-    Vector2 update = vector2_dir(player->angle, player->velocity);
-    player->position = vector2_add(player->position, update);
+    Vector2 update = vector2_dir(player.angle, player.velocity);
+    player.position = vector2_add(player.position, update);
 
-    player->position.x = clamp(player->position.x, 0, SCREEN_WIDTH);
-    player->position.y = clamp(player->position.y, 0, SCREEN_HEIGHT);
-
-    message->player_position = player->position;
-    message->player_angle = player->angle;
+    player.position.x = clamp(player.position.x, 0, SCREEN_WIDTH);
+    player.position.y = clamp(player.position.y, 0, SCREEN_HEIGHT);
 
     // bullets -----------------------------------------------------------------------
 
-    if (player->bullet_timer != 0) {
-        --player->bullet_timer;
+    if (player.bullet_timer != 0) {
+        --player.bullet_timer;
     }
 
     if (IsKeyPressed(KEY_H)) {
         // 1 frame buffer
-        if (player->bullet_timer <= 1) {
+        if (player.bullet_timer <= 1) {
             Bullet new_bullet = {
-                .position = player->position,
-                .update_vector = vector2_dir(player->angle, 15.0),
+                .position = player.position,
+                .update_vector = vector2_dir(player.angle, 15.0),
                 .size = 3,
                 .damage = 20,
             };
 
-            message->spawned_bullet = true;
-            BulletSpawnMessage spawned = {
-                .position = new_bullet.position,
-                .update_vector = new_bullet.update_vector,
-                .size = new_bullet.size,
-                .damage = new_bullet.damage,
-            };
-            message->new_bullet = spawned;
             spawn_bullet(new_bullet);
-            player->bullet_timer = player->bullet_cooldown;
+            player.bullet_timer = player.bullet_cooldown;
         }
     }
+}
+
+void draw_player() {
+    Color player_colour;
+    if (player.bullet_timer != 0) {
+        player_colour = BLACK;
+    } else {
+        player_colour = MAROON;
+    }
+    DrawCircleV(player.position, 20, player_colour);
+    Vector2 head = vector2_add(player.position, vector2_dir(player.angle, 16)); 
+    DrawCircleV(head, 4, WHITE);
 }
 
 int spawn_bullet(Bullet new_bullet) {
@@ -202,4 +137,73 @@ void update_bullet_positions() {
 void remove_bullet(int i) {
     memmove(&bullets[i], &bullets[i+1], (bullet_count-i-1) * sizeof(Bullet));
     --bullet_count;
+}
+
+void draw_bullets() {
+    for (int i = 0; i < bullet_count; ++i) {
+        DrawCircleV(bullets[i].position, bullets[i].size, BLUE);
+    }
+}
+
+int spawn_enemy(Enemy new_enemy) {
+    if (enemy_count == MAX_ENEMIES) {
+        return 1;
+    }
+
+    enemies[enemy_count] = new_enemy.tag;
+    enemy_data[enemy_count] = new_enemy.data;
+    enemy_count += 1;
+
+    return 0;
+}
+
+void update_enemy_positions() {
+    for (int i = 0; i < enemy_count; ++i) {
+        EnemyTag e = enemies[i];
+
+        Vector2 dir = normalize(vector2_sub(player.position, e.position));
+        e.position = vector2_add(e.position, vector2_scale(dir, ENEMY_SPEED));
+        enemies[i] = e;
+    }
+}
+
+void update_enemy_collisions() {
+    while (1) {
+        bool collided = false;
+
+        for (int i = 0; i < enemy_count; ++i) {
+            for (int j = i+1; j < enemy_count; ++j) {
+                EnemyTag e1 = enemies[i];
+                EnemyTag e2 = enemies[j];
+
+                if (colliding(
+                    e1.position,
+                    e1.size,
+                    e2.position,
+                    e2.size
+                )) {
+                    collided = true;
+
+                    float diff = distance(e1.position, e2.position);
+                    float overlap = (e1.size + e2.size) - diff + 0.01;
+                    Vector2 dir = normalize(vector2_sub(e1.position, e2.position));
+                    Vector2 shift1 = vector2_scale(dir, 0.5 * overlap);
+                    Vector2 shift2 = vector2_scale(dir, -0.5 * overlap);
+
+                    enemies[i].position = vector2_add(e1.position, shift1);
+                    enemies[j].position = vector2_add(e2.position, shift2);
+                }
+            }
+        }
+
+        if (!collided) { 
+            break; 
+        }
+    }
+}
+
+void draw_enemies() {
+    for (int i = 0; i < enemy_count; ++i) {
+        DrawCircleV(enemies[i].position, ENEMY_VISUAL_SIZE, RED);
+    }
 }
