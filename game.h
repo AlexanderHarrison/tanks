@@ -1,13 +1,32 @@
 #pragma once
 
+#include <stdio.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdint.h>
 #include <math.h>
+#include <raylib.h>
 
 #include "controls.h"
+#include <tools.h>
 
 #define SCREEN_WIDTH 800
 #define SCREEN_HEIGHT 800
 
+#define AA_SIZE_INCREMENT 0.3
+
+void draw_circle_v_aa(Vector2 centre, F32 radius, Color colour) {
+    DrawCircleV(centre, radius+AA_SIZE_INCREMENT*2.0, Fade(colour, 0.2));
+    DrawCircleV(centre, radius+AA_SIZE_INCREMENT, Fade(colour, 0.5));
+    DrawCircleV(centre, radius, colour);
+}
+
 // GENERAL -------------------------------------------------------------
+
+typedef enum {
+    Side_Left,
+    Side_Right,
+} Side;
 
 typedef enum {
     SceneType_Err,
@@ -28,118 +47,17 @@ typedef union {
 typedef struct {
     SceneType next_scene_type;
     union {
-        char* err;
+        const char* err;
         Controls* set_controls_target;
     };
 } SceneTransition;
 
-// INPUT ---------------------------------------------------------------
-
-bool player_input_down(Controls* controls, PlayerInput input) {
-    PlayerInputMapping mapping = controls->map[input];
-    switch (mapping.source_type) {
-        case PlayerInputSourceType_Unmapped: return false;
-        case PlayerInputSourceType_Keyboard: {
-            return IsKeyDown(mapping.keyboard_input);
-        }
-        case PlayerInputSourceType_Gamepad: {
-            GamepadInput g_input = mapping.gamepad_input;
-            return IsGamepadButtonDown(g_input.gamepad, g_input.button);
-        }
-    }
-
-    return false;
-}
-
-bool player_input_pressed(Controls* controls, PlayerInput input) {
-    PlayerInputMapping mapping = controls->map[input];
-    switch (mapping.source_type) {
-        case PlayerInputSourceType_Unmapped: return false;
-        case PlayerInputSourceType_Keyboard: {
-            return IsKeyPressed(mapping.keyboard_input);
-        }
-        case PlayerInputSourceType_Gamepad: {
-            GamepadInput g_input = mapping.gamepad_input;
-            return IsGamepadButtonPressed(g_input.gamepad, g_input.button);
-        }
-    }
-
-    return false;
-}
-
-// PLAYER ------------------------------------------------------------
-
-typedef struct {
-    float max_speed;
-    float acceleration;
-    float angle_acceleration;
-    float angle_max_speed;
-    float angle_max_speed_fast;
-    float size;
-    float visual_size;
-    float hurtbox_size;
-    int bullet_cooldown;
-    Color body_colour;
-
-    Vector2 position;
-    float velocity;
-    float angle; // degrees
-    float angle_velocity;
-    int bullet_timer;
-    bool dead;
-} Player;
-
-static const Player default_player = {
-    .max_speed = 8.0f,
-    .acceleration = 0.5f,
-    .angle_max_speed = 2.0f,
-    .angle_max_speed_fast = 9.0f,
-    .angle_acceleration = 1.5f,
-    .visual_size = 20.0f,
-    .hurtbox_size = 18.0f,
-    .bullet_cooldown = 10,
-    .body_colour = { 190, 33, 55, 255 },
-    .max_health = 100,
-
-    .position = { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
-    .velocity = 0,
-    .angle = -90.0f,
-    .angle_velocity = 0.0f,
-    .bullet_timer = 3,
-    .health = 100;
-};
-
-Controls player1_controls = {
-    .map = {
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_W }, // forward
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_S }, // backward
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_A }, // turn cc
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_D }, // turn cl
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_LEFT_SHIFT }, // turn mod
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_ONE }, // atk1
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_TWO }, // atk2
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_THREE }, // atk3
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_FOUR }, // atk4
-    }
-};
-
-Controls player2_controls = {
-    .map = {
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_I }, // forward
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_K }, // backward
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_J }, // turn cc
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_L }, // turn cl
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_SPACE }, // turn mod
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_NINE }, // atk1
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_ZERO }, // atk2
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_MINUS }, // atk3
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_EQUAL }, // atk4
-    }
-};
-
-void update_player(Player* player, Controls* controls);
-
-void draw_player(Player* player);
+#define ENTITY_TYPE_WALL (1u << 0)
+#define ENTITY_TYPE_BULLET (1u << 1)
+#define ENTITY_TYPE_TANK_PLAYER (1u << 2)
+#define ENTITY_TYPE_TANK_ENEMY (1u << 3)
+#define ENTITY_TYPE_ALL (~0)
+typedef U16 EntityTypeMask;
 
 // MENUS ----------------------------------------------------------------
 
@@ -238,128 +156,190 @@ static const MenuItem controls_menu[CONTROLS_MENU_SIZE] = {
     },
 };
 
-SceneTransition run_menu(const MenuItem* menu, int menu_len);
+SceneTransition run_menu(const MenuItem* menu, U32 menu_len);
 SceneTransition run_singleplayer(void);
 SceneTransition run_multiplayer(void);
 SceneTransition run_set_controls(Controls* target_controls);
 
-// BULLET -------------------------------------------------------------
+// INPUT ---------------------------------------------------------------
 
-typedef enum {
-    OwnerType_Player,
-    OwnerType_Enemy,
-} OwnerType;
+bool player_input_down(Controls* controls, PlayerInput input) {
+    PlayerInputMapping mapping = controls->map[input];
+    switch (mapping.source_type) {
+        case PlayerInputSourceType_Unmapped: return false;
+        case PlayerInputSourceType_Keyboard: {
+            return IsKeyDown(mapping.keyboard_input);
+        }
+        case PlayerInputSourceType_Gamepad: {
+            GamepadInput g_input = mapping.gamepad_input;
+            return IsGamepadButtonDown(g_input.gamepad, g_input.button);
+        }
+        default: {
+            fprintf(stderr, "ERROR: player input case %i not handled\n", mapping.source_type);
+            return false;
+        }
+    }
 
-typedef struct {
-    OwnerType type;
-    union {
-        Player* player;
-    };
-} Owner;
+    return false;
+}
 
-#define MAX_BULLETS 512
+bool player_input_pressed(Controls* controls, PlayerInput input) {
+    PlayerInputMapping mapping = controls->map[input];
+    switch (mapping.source_type) {
+        case PlayerInputSourceType_Unmapped: return false;
+        case PlayerInputSourceType_Keyboard: {
+            return IsKeyPressed(mapping.keyboard_input);
+        }
+        case PlayerInputSourceType_Gamepad: {
+            GamepadInput g_input = mapping.gamepad_input;
+            return IsGamepadButtonPressed(g_input.gamepad, g_input.button);
+        }
+        default: {
+            fprintf(stderr, "ERROR: player input case %i not handled\n", mapping.source_type);
+            return false;
+        }
+    }
 
-typedef struct {
-    Vector2 position;
-    Vector2 update_vector;
-    float collision_size;
-    float damage;
-    Owner owner;
-} Bullet;
+    return false;
+}
 
-Bullet bullets[MAX_BULLETS];
-int bullet_count = 0;
+// Collision ------------------------------------------------------------
 
-int spawn_bullet(Bullet);
-void update_bullet_positions(void);
-void remove_bullet(int i);
-void draw_bullets(void);
-
-// ENEMIES -------------------------------------------------------------
-
-#define MAX_ENEMIES 512
-
-#define ENEMY_VISUAL_SIZE 25.0
-#define ENEMY_COLLISION_SIZE 15.0
-#define ENEMY_SPEED 1.0
-
-typedef int EnemyUniqueData_None;
-
-typedef enum {
-    EnemyType_Test,
-} EnemyType;
-
-typedef enum {
-    EnemyFlag_Invincible = 1,
-} EnemyFlags;
-
-typedef struct {
-    Vector2 position;
-    float enemy_collision_size;
-    float bullet_collision_size;
-    float health;
-    EnemyFlags flags;
-    EnemyType type;
-} EnemyTag;
+#define COLLISION_EPSILON 0.01f
+#define COLLISION_EPSILON_SQ 0.0001f
 
 typedef union {
-    EnemyUniqueData_None none;   
-} EnemyUniqueData;
+    struct {
+        F32 size;
+    } circle;
+    //struct {
+    //    Vector2 size;
+    //} rect;
+} Collision;
 
-// used mostly in update function
+#define COLLISION_EVENT_TYPE_NONE 0x0
+#define COLLISION_EVENT_TYPE_CIRCLE_CIRCLE 0x5 // 0b0101
+
+// Entity ------------------------------------------------------------
+
+#define ENTITY_FLAGS_COLLISION_BITS 2
+#define ENTITY_FLAGS_COLLISION_TYPE     0x00000003
+#define ENTITY_FLAGS_COLLISION_NONE     0x00000000
+#define ENTITY_FLAGS_COLLISION_CIRCLE   0x00000001
+//#define ENTITY_FLAGS_COLLISION_RECT     0x00000002
+//#define ENTITY_FLAGS_COLLISION_RESERVED 0x00000003
+#define ENTITY_FLAGS_STATIC_COLLISION   0x00000004
+
+typedef struct Entity {
+    ArenaKey data_ref;
+    EntityTypeMask entity_type;
+    EntityTypeMask collision_mask;
+    U32 entity_flags;
+    Collision collision;
+    Vector2 position;
+    void (*on_collide)(struct Entity* this, struct Entity* other);
+    void (*draw)(struct Entity* this);
+    void (*update)(struct Entity* this);
+} Entity;
+
+#define ARENA_TYPE Entity
+#include <arena.h>
+Arena_Entity entities;
+typedef ArenaKey EntityRef;
+
+void run_updates();
+void run_collision_checks();
+void draw_entities();
+
+U32 collision_event_type(Entity* a, Entity* b);
+bool colliding(Entity* a, Entity* b);
+Vector2 eject_collision(Entity* a, Entity* b);
+
+// Tank ------------------------------------------------------------
+
 typedef struct {
-    Vector2 knockback;
-    int knockback_timer;
-    int invincibility_timer;
-    int death_time;
-    int death_timer;
-    EnemyUniqueData unique_data;
-} EnemyData;
+    F32 max_speed;
+    F32 acceleration;
+    F32 angle_acceleration;
+    F32 angle_max_speed;
+    F32 angle_max_speed_fast;
+    F32 size;
+    I32 bullet_cooldown;
+    I32 max_health;
+} TankStats;
+
+typedef struct Tank {
+    EntityRef e;
+    const TankStats* stats;
+    // might be null
+    Controls* controls;
+    Color body_colour;
+    F32 velocity;
+    F32 angle; // degrees
+    F32 angle_velocity;
+    I32 bullet_timer;
+    bool dead;
+    I32 health;
+} Tank;
+
+static const TankStats default_tank = {
+    .max_speed = 8.0f,
+    .acceleration = 0.5f,
+    .angle_max_speed = 2.0f,
+    .angle_max_speed_fast = 9.0f,
+    .angle_acceleration = 1.5f,
+    .size = 20.0f,
+    .bullet_cooldown = 10,
+    .max_health = 100,
+};
+
+#define ARENA_TYPE Tank
+#include <arena.h>
+Arena_Tank tanks;
+typedef ArenaKey TankRef;
+
+TankRef insert_tank(Tank tank, Entity e);
+void remove_tank(TankRef t);
+
+void update_tank_player(Entity* e);
+void handle_collision_tank_player(Entity* this, Entity* other);
+void draw_tank_player(Entity* e);
+
+// BULLET -------------------------------------------------------------
+
+//typedef struct {
+//    int type;
+//    union data {
+//        struct async_timer {
+//            F32 time;
+//        };
+//    };
+//} Subaction;
 
 typedef struct {
-    EnemyTag tag;
-    EnemyData data;
-} Enemy;
+    EntityRef e;
 
-EnemyTag enemies[MAX_ENEMIES];
-EnemyData enemy_data[MAX_ENEMIES];
-int enemy_count = 0;
+    Vector2 direction;
+    F32 speed;
+    //int subaction_index;
+} Bullet;
 
-int spawn_enemy(Enemy);
-void remove_enemy(int);
-void update_enemies(Player* player);
-void resolve_enemy_enemy_collisions(void);
-void resolve_enemy_bullet_collisions(void);
-void resolve_player_bullet_collisions(Player** players, int player_count);
-void resolve_player_player_collisions(Player** players, int player_count);
-void draw_enemies(void);
+#define ARENA_TYPE Bullet
+#include <arena.h>
+Arena_Bullet bullets;
+typedef ArenaKey BulletRef;
 
-Enemy enemy_test(Vector2 position) {
-    EnemyTag tag = {
-        .position = position,
-        .enemy_collision_size = ENEMY_COLLISION_SIZE,
-        .bullet_collision_size = ENEMY_VISUAL_SIZE,
-        .health = 30.0,
-        .flags = 0,
-        .type = EnemyType_Test
-    };
+BulletRef insert_bullet(Bullet tank, Entity e);
+void remove_bullet(BulletRef t);
 
-    EnemyUniqueData unique_data = { .none = 0 };
-    EnemyData data = {
-        .knockback = { .x = 0.0, .y = 0.0 },
-        .knockback_timer = 0,
-        .invincibility_timer = 0,
-        .death_time = 0,
-        .death_timer = 0,
-        .unique_data = unique_data
-    };
+void update_bullet(Entity* e);
+void handle_collision_bullet(Entity* this, Entity* other);
+void draw_bullet(Entity* e);
 
-    Enemy test = {
-        .tag = tag,
-        .data = data
-    };
-    return test;
-}
+// HUD ------------------------------------------------------------
+
+void draw_player_hud(Tank* player, Side side);
+void draw_general_hud();
 
 // MATH -------------------------------------------------------------
 
@@ -373,39 +353,52 @@ Vector2 vector2_sub(Vector2 a, Vector2 b) {
     return new_v;
 }
 
-Vector2 vector2_scale(Vector2 v, float scale) {
+Vector2 vector2_scale(Vector2 v, F32 scale) {
     Vector2 new_v = { .x = v.x * scale, .y = v.y * scale };
     return new_v;
 }
 
 // angle in degrees
-Vector2 vector2_dir(float angle, float length) {
-    float angle_rad = (angle / 180.0f) * PI;
+Vector2 vector2_dir(F32 angle, F32 length) {
+    F32 angle_rad = (angle / 180.0f) * PI;
     Vector2 dir = {
-        .x = cos(angle_rad) * length,
-        .y = sin(angle_rad) * length,
+        .x = cosf(angle_rad) * length,
+        .y = sinf(angle_rad) * length,
     };
 
     return dir;
 }
 
-float length_squared(Vector2 a) {
+F32 vector2_dot(Vector2 a, Vector2 b) {
+    return a.x*b.x + a.y*b.y;
+}
+
+// assumes normal is normalized. 
+// reflected vector has same magnitude as incident.
+//
+// https://www.desmos.com/calculator/b01p9ptgxi
+Vector2 reflect(Vector2 incident, Vector2 normal) {
+    F32 a = -2.0f * vector2_dot(normal, incident);
+    return vector2_add(incident, vector2_scale(normal, a));
+}
+
+F32 length_squared(Vector2 a) {
     return a.x*a.x + a.y*a.y;
 }
 
-float length(Vector2 a) {
-    return sqrt(length_squared(a));
+F32 length(Vector2 a) {
+    return sqrtf(length_squared(a));
 }
 
-float distance_squared(Vector2 a, Vector2 b) {
+F32 distance_squared(Vector2 a, Vector2 b) {
     return length_squared(vector2_sub(a, b));
 }
 
-float distance(Vector2 a, Vector2 b) {
+F32 distance(Vector2 a, Vector2 b) {
     return length(vector2_sub(a, b));
 }
 
-float clamp(float val, float a, float b) {
+F32 clamp(F32 val, F32 a, F32 b) {
     if (val < a) {
         return a;
     } else if (val > b) {
@@ -415,13 +408,8 @@ float clamp(float val, float a, float b) {
     }
 }
 
-bool colliding(Vector2 p1, float s1, Vector2 p2, float s2) {
-    float tsize = s1 + s2;
-    return tsize*tsize >= distance_squared(p1, p2);
-}
-
 Vector2 normalize(Vector2 v) {
-    float len = length(v);
+    F32 len = length(v);
     Vector2 dir = { 
         .x = v.x / len,
         .y = v.y / len 
