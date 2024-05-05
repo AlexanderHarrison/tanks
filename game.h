@@ -52,10 +52,11 @@ typedef struct {
     };
 } SceneTransition;
 
-#define ENTITY_TYPE_WALL (1u << 0)
-#define ENTITY_TYPE_BULLET (1u << 1)
-#define ENTITY_TYPE_TANK_PLAYER (1u << 2)
-#define ENTITY_TYPE_TANK_ENEMY (1u << 3)
+#define ENTITY_TYPE_DEBUG (1u << 0)
+#define ENTITY_TYPE_WALL (1u << 1)
+#define ENTITY_TYPE_BULLET (1u << 2)
+#define ENTITY_TYPE_TANK_PLAYER (1u << 3)
+#define ENTITY_TYPE_TANK_ENEMY (1u << 4)
 #define ENTITY_TYPE_ALL (~0)
 typedef U16 EntityTypeMask;
 
@@ -208,34 +209,26 @@ bool player_input_pressed(Controls* controls, PlayerInput input) {
 #define COLLISION_EPSILON 0.01f
 #define COLLISION_EPSILON_SQ 0.0001f
 
-typedef union {
-    struct {
-        F32 size;
-    } circle;
-    //struct {
-    //    Vector2 size;
-    //} rect;
-} Collision;
-
-#define COLLISION_EVENT_TYPE_NONE 0x0
-#define COLLISION_EVENT_TYPE_CIRCLE_CIRCLE 0x5 // 0b0101
-
 // Entity ------------------------------------------------------------
 
-#define ENTITY_FLAGS_COLLISION_BITS 2
-#define ENTITY_FLAGS_COLLISION_TYPE     0x00000003
-#define ENTITY_FLAGS_COLLISION_NONE     0x00000000
-#define ENTITY_FLAGS_COLLISION_CIRCLE   0x00000001
-//#define ENTITY_FLAGS_COLLISION_RECT     0x00000002
-//#define ENTITY_FLAGS_COLLISION_RESERVED 0x00000003
-#define ENTITY_FLAGS_STATIC_COLLISION   0x00000004
+#define ENTITY_FLAGS_COLLISION_NONE     0x00000001
+
+#define ENTITY_FLAGS_RENDER_LAYER_BITS 2
+#define ENTITY_FLAGS_RENDER_LAYER       0x00000300
+#define ENTITY_FLAGS_RENDER_LAYER_0     0x00000000
+#define ENTITY_FLAGS_RENDER_LAYER_1     0x00000100
+#define ENTITY_FLAGS_RENDER_LAYER_2     0x00000200
+#define ENTITY_FLAGS_RENDER_LAYER_3     0x00000300
 
 typedef struct Entity {
     ArenaKey data_ref;
     EntityTypeMask entity_type;
     EntityTypeMask collision_mask;
     U32 entity_flags;
-    Collision collision;
+
+    F32 collision_roundness;
+    Vector2 collision_size;
+
     Vector2 position;
     void (*on_collide)(struct Entity* this, struct Entity* other);
     void (*draw)(struct Entity* this);
@@ -247,13 +240,15 @@ typedef struct Entity {
 Arena_Entity entities;
 typedef ArenaKey EntityRef;
 
-void run_updates();
+void run_entity_updates();
 void run_collision_checks();
 void draw_entities();
 
-U32 collision_event_type(Entity* a, Entity* b);
 bool colliding(Entity* a, Entity* b);
 Vector2 eject_collision(Entity* a, Entity* b);
+
+void draw_debug_vector(Entity* e);
+void insert_debug_vector(Vector2 base, Vector2 vector);
 
 // Tank ------------------------------------------------------------
 
@@ -298,7 +293,12 @@ static const TankStats default_tank = {
 Arena_Tank tanks;
 typedef ArenaKey TankRef;
 
-TankRef insert_tank(Tank tank, Entity e);
+typedef struct {
+    EntityRef e;
+    TankRef t;
+} TankInsertReturn;
+
+TankInsertReturn insert_tank(Tank tank, Entity e);
 void remove_tank(TankRef t);
 
 void update_tank_player(Entity* e);
@@ -321,6 +321,7 @@ typedef struct {
 
     Vector2 direction;
     F32 speed;
+    I32 bounces;
     //int subaction_index;
 } Bullet;
 
@@ -329,7 +330,12 @@ typedef struct {
 Arena_Bullet bullets;
 typedef ArenaKey BulletRef;
 
-BulletRef insert_bullet(Bullet tank, Entity e);
+typedef struct {
+    EntityRef e;
+    BulletRef b;
+} BulletInsertReturn;
+
+BulletInsertReturn insert_bullet(Bullet tank, Entity e);
 void remove_bullet(BulletRef t);
 
 void update_bullet(Entity* e);
@@ -344,33 +350,45 @@ void draw_general_hud();
 // MATH -------------------------------------------------------------
 
 Vector2 vector2_add(Vector2 a, Vector2 b) {
-    Vector2 new_v = { .x = a.x + b.x, .y = a.y + b.y };
-    return new_v;
+    return (Vector2) { .x = a.x + b.x, .y = a.y + b.y };
+}
+
+Vector2 vector2_mul(Vector2 a, Vector2 b) {
+    return (Vector2) { .x = a.x * b.x, .y = a.y * b.y };
 }
 
 Vector2 vector2_sub(Vector2 a, Vector2 b) {
-    Vector2 new_v = { .x = a.x - b.x, .y = a.y - b.y };
-    return new_v;
+    return (Vector2) { .x = a.x - b.x, .y = a.y - b.y };
+}
+
+Vector2 vector2_sub_f(Vector2 a, F32 b) {
+    return (Vector2) { .x = a.x - b, .y = a.y - b };
 }
 
 Vector2 vector2_scale(Vector2 v, F32 scale) {
-    Vector2 new_v = { .x = v.x * scale, .y = v.y * scale };
-    return new_v;
+    return (Vector2) { .x = v.x * scale, .y = v.y * scale };
 }
 
 // angle in degrees
 Vector2 vector2_dir(F32 angle, F32 length) {
     F32 angle_rad = (angle / 180.0f) * PI;
-    Vector2 dir = {
+    return (Vector2) {
         .x = cosf(angle_rad) * length,
         .y = sinf(angle_rad) * length,
     };
-
-    return dir;
 }
 
 F32 vector2_dot(Vector2 a, Vector2 b) {
     return a.x*b.x + a.y*b.y;
+}
+
+Vector2 vector2_abs(Vector2 v) {
+    F32 x = v.x;
+    F32 y = v.y;
+    return (Vector2) {
+        .x = (x > 0.0f) ? x : -x,
+        .y = (y > 0.0f) ? y : -y,
+    };
 }
 
 // assumes normal is normalized. 
@@ -410,9 +428,8 @@ F32 clamp(F32 val, F32 a, F32 b) {
 
 Vector2 normalize(Vector2 v) {
     F32 len = length(v);
-    Vector2 dir = { 
+    return (Vector2) { 
         .x = v.x / len,
         .y = v.y / len 
     };
-    return dir;
 }

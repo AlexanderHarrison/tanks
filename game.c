@@ -1,5 +1,7 @@
 #include "game.h"
 
+TODO line 471
+
 int main(void) {
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Game");
     SetTargetFPS(60);
@@ -238,8 +240,18 @@ SceneTransition run_multiplayer() {
 }
 
 void draw_wall(Entity* e) {
-    F32 size = e->collision.circle.size;
-    draw_circle_v_aa(e->position, size, GRAY);
+    Vector2 pos = e->position;
+    Vector2 size = e->collision_size;
+    F32 r = e->collision_roundness;
+
+    Rectangle rect = {
+        .x = pos.x - size.x,
+        .y = pos.y - size.y,
+        .width = size.x*2.0f,
+        .height = size.y*2.0f,
+    };
+    DrawRectangleRounded(rect, e->collision_roundness / fmin(size.x, size.y), 5, GRAY);
+    //draw_circle_v_aa(e->position, size, GRAY);
     //DrawRectangleV(e->position, size, GRAY);
 }
 
@@ -250,8 +262,9 @@ SceneTransition run_singleplayer() {
 
     arena_insert_Entity(&entities, (Entity) {
         .entity_type = ENTITY_TYPE_WALL,
-        .entity_flags = ENTITY_FLAGS_COLLISION_CIRCLE | ENTITY_FLAGS_STATIC_COLLISION,
-        .collision = { .circle = { .size = 50.0 } },
+        .entity_flags = 0,
+        .collision_roundness = 45.0f,
+        .collision_size = { 50.0f, 50.0f },
         .position = { .x = SCREEN_WIDTH / 2, .y = SCREEN_HEIGHT / 2 },
         .on_collide = NULL,
         .draw = draw_wall,
@@ -271,9 +284,10 @@ SceneTransition run_singleplayer() {
         },
         (Entity) {
             .entity_type = ENTITY_TYPE_TANK_PLAYER,
-            .collision_mask = ENTITY_TYPE_ALL,
-            .entity_flags = ENTITY_FLAGS_COLLISION_CIRCLE,
-            .collision = { .circle = { .size = default_tank.size } },
+            .collision_mask = ENTITY_TYPE_WALL,
+            .collision_roundness = default_tank.size,
+            .collision_size = { default_tank.size, default_tank.size },
+            .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
             .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
             .on_collide = handle_collision_tank_player,
             .draw = draw_tank_player,
@@ -306,14 +320,7 @@ SceneTransition run_singleplayer() {
 
         //// update ----------------------------------------------------
 
-        run_updates();
-        //update_player(&player, &player1_controls);
-
-        //update_bullets();
-        //update_enemies(&player);
-        //resolve_enemy_enemy_collisions();
-        //resolve_enemy_bullet_collisions();
-
+        run_entity_updates();
         run_collision_checks();
 
         // draw ----------------------------------------------------
@@ -351,6 +358,9 @@ void run_collision_checks() {
         ArenaKey k1 = arena_iter_next(&iter1);
         if (k1.idx == ARENA_INVALID_IDX) break;
         Entity* e1 = arena_lookup_Entity(&entities, k1);
+        if (e1->entity_flags & ENTITY_FLAGS_COLLISION_NONE)
+            continue;
+
         EntityTypeMask etype1 = e1->entity_type;
         EntityTypeMask coll1 = e1->collision_mask;
 
@@ -373,94 +383,198 @@ void run_collision_checks() {
     }
 }
 
-//CollisionInfo compute_collision(Entity* a, Entity* b) {
-//    return (CollisionInfo) {};
-//            //// m = (r_b a + r_a b) / (r_a + r_b)
-//            //// https://www.desmos.com/calculator/52rxnfpfzn
-//            //out->point = vector2_scale(
-//            //    vector2_add(
-//            //        vector2_scale(pos_a, col_b.circle.size), 
-//            //        vector2_scale(pos_b, col_a.circle.size)
-//            //    ),
-//            //    1.0f / (col_a.circle.size + col_b.circle.size)
-//            //);
-//            //out->normal = vector2_scale(diff, fsqrt(dist_sq));
-//
-//            //return true;
-//}
+static bool rect_colliding(Vector2 pos_a, Vector2 size_a, Vector2 pos_b, Vector2 size_b) {
+    Vector2 diff = vector2_abs(vector2_sub(pos_a, pos_b));
+    Vector2 size = vector2_add(size_a, size_b);
+    bool x_inside = diff.x + COLLISION_EPSILON <= size.x;
+    bool y_inside = diff.y + COLLISION_EPSILON <= size.y;
+    return x_inside & y_inside;
+}
 
-U32 collision_event_type(Entity* a, Entity* b) {
-    U32 type_a = a->entity_flags & ENTITY_FLAGS_COLLISION_TYPE;
-    U32 type_b = b->entity_flags & ENTITY_FLAGS_COLLISION_TYPE;
-
-    if (type_a == ENTITY_FLAGS_COLLISION_NONE || type_b == ENTITY_FLAGS_COLLISION_NONE)
-        return COLLISION_EVENT_TYPE_NONE;
-
-    return (type_a << ENTITY_FLAGS_COLLISION_BITS) ^ type_b;
+static bool circle_colliding(Vector2 pos_a, F32 size_a, Vector2 pos_b, F32 size_b) {
+    printf("%f %f %f ; %f %f %f\n", pos_a.x, pos_a.y, size_a, pos_b.x, pos_b.y, size_b);
+    Vector2 diff = vector2_sub(pos_a, pos_b);
+    F32 diff_len_sq = vector2_dot(diff, diff);
+    F32 size = size_a + size_b;
+    return diff_len_sq + COLLISION_EPSILON_SQ <= size*size;
 }
 
 // vector to move 'a' such that it is just outside of 'b'
+// assumes collision occurs
 Vector2 eject_collision(Entity* a, Entity* b) {
-    Collision col_a = a->collision;
-    Vector2 pos_a = a->position;
-    Collision col_b = b->collision;
-    Vector2 pos_b = b->position;
+    Vector2 a_pos = a->position;
+    F32 a_roundness = a->collision_roundness;
+    Vector2 a_bound_size = a->collision_size;
+    Vector2 b_pos = b->position;
+    F32 b_roundness = b->collision_roundness;
+    Vector2 b_bound_size = b->collision_size;
 
-    switch (collision_event_type(a, b)) {
-        case COLLISION_EVENT_TYPE_NONE: {
-            return (Vector2) { .x = 0.0f, .y = 0.0f };
-        }
-        case COLLISION_EVENT_TYPE_CIRCLE_CIRCLE: {
-            Vector2 diff = vector2_sub(pos_a, pos_b);
-            F32 diff_len = length(diff);
-            Vector2 norm = vector2_scale(diff, 1.0f / diff_len);
-            F32 overlap = col_a.circle.size + col_b.circle.size - diff_len;
-            return vector2_scale(norm, overlap + COLLISION_EPSILON);
-        }
-        default: {
-            fprintf(stderr, "Invalid collision type\n");
-            return (Vector2) { .x = 0.0f, .y = 0.0f };
+    Vector2 a_horiz_rect = {
+        .x = a_bound_size.x,
+        .y = a_bound_size.y - a_roundness,
+    };
+    Vector2 b_horiz_rect = {
+        .x = b_bound_size.x,
+        .y = b_bound_size.y - b_roundness,
+    };
+
+    bool horiz_inside = rect_colliding(a_pos, a_horiz_rect, b_pos, b_horiz_rect);
+    F32 horiz_overlap = (a_bound_size.x + b_bound_size.x) - fabs(a_pos.x - b_pos.x) + COLLISION_EPSILON;
+
+    Vector2 a_vert_rect = {
+        .x = a_bound_size.x - a_roundness,
+        .y = a_bound_size.y,
+    };
+    Vector2 b_vert_rect = {
+        .x = b_bound_size.x - b_roundness,
+        .y = b_bound_size.y,
+    };
+
+    bool vert_inside = rect_colliding(a_pos, a_vert_rect, b_pos, b_vert_rect);
+    F32 vert_overlap = (a_bound_size.y + b_bound_size.y) - fabs(a_pos.y - b_pos.y) + COLLISION_EPSILON;
+
+    if (vert_inside && horiz_inside) {
+        if (horiz_overlap < vert_overlap) {
+            vert_inside = false;
+        } else {
+            horiz_inside = false;
         }
     }
+
+    if (horiz_inside) {
+        return (Vector2) {
+            .x = a_pos.x > b_pos.x ? horiz_overlap : -horiz_overlap,
+            .y = 0.0f,
+        };
+    }
+
+    if (vert_inside) {
+        return (Vector2) {
+            .x = 0.0f,
+            .y = a_pos.y > b_pos.y ? vert_overlap : -vert_overlap,
+        };
+    }
+
+    Vector2 a_circle_centre_offset = vector2_sub_f(a_bound_size, a_roundness);
+    Vector2 b_circle_centre_offset = vector2_sub_f(b_bound_size, b_roundness);
+
+    Vector2 circles[4] = {
+        {.x =  1.0f, .y =  1.0f },
+        {.x =  1.0f, .y = -1.0f },
+        {.x = -1.0f, .y =  1.0f },
+        {.x = -1.0f, .y = -1.0f },
+    };
+
+    for (U64 i = 0; i < 4; ++i) {
+        Vector2 a_c = vector2_add(a_pos, vector2_mul(a_circle_centre_offset, circles[i]));
+
+        for (U64 j = 0; j < 4; ++j) {
+            Vector2 b_c = vector2_add(b_pos, vector2_mul(b_circle_centre_offset, circles[j]));
+            // TODO find closest circle
+            if (circle_colliding(a_c, a_roundness, b_c, b_roundness)) {
+                Vector2 diff = vector2_sub(a_c, b_c);
+                F32 diff_len = length(diff);
+                F32 overlap = (a_roundness + b_roundness) - diff_len + COLLISION_EPSILON;
+                return vector2_scale(diff, overlap / diff_len);
+            }
+        }
+    }
+
+    return (Vector2) { .x = 0.0f, .y = 0.0f };
 }
 
-// returns true if colliding, writing info into out
+// does not handle rotation yet
 bool colliding(Entity* a, Entity* b) {
-    U32 type_a = a->entity_flags & ENTITY_FLAGS_COLLISION_TYPE;
-    Collision col_a = a->collision;
-    Vector2 pos_a = a->position;
-    U32 type_b = b->entity_flags & ENTITY_FLAGS_COLLISION_TYPE;
-    Collision col_b = b->collision;
-    Vector2 pos_b = b->position;
+    if ((a->entity_flags | b->entity_flags) & ENTITY_FLAGS_COLLISION_NONE)
+        return false;
 
-    switch ((type_a << ENTITY_FLAGS_COLLISION_BITS) ^ type_b) {
-        case COLLISION_EVENT_TYPE_NONE: return false;
-        case COLLISION_EVENT_TYPE_CIRCLE_CIRCLE: {
-            Vector2 diff = vector2_sub(pos_a, pos_b);
-            F32 dist_sq = diff.x*diff.x + diff.y*diff.y;
-            F32 max_collision_dist = col_a.circle.size + col_b.circle.size;
-            return dist_sq+COLLISION_EPSILON_SQ < max_collision_dist*max_collision_dist;
-        }
-        default: {
-            fprintf(stderr, "Invalid collision type\n");
-            return false;
+    // https://www.desmos.com/calculator/iroxa0pd0p
+    // rounded rect collision can be broken into three stages:
+    // 1. early bounding box test
+    // 2. collision between the inner rectangles (two rectanges that cross cutting out the rounded corners)
+    // 3. collision between the four circles making up the rounded edges
+
+    Vector2 a_pos = a->position;
+    F32 a_roundness = a->collision_roundness;
+    Vector2 a_bound_size = a->collision_size;
+
+    Vector2 b_pos = b->position;
+    F32 b_roundness = b->collision_roundness;
+    Vector2 b_bound_size = b->collision_size;
+
+    // early bounding box test
+    if (!rect_colliding(a_pos, a_bound_size, b_pos, b_bound_size))
+        return false;
+
+    Vector2 a_horiz_rect = {
+        .x = a_bound_size.x,
+        .y = a_bound_size.y - a_roundness,
+    };
+    Vector2 b_horiz_rect = {
+        .x = b_bound_size.x,
+        .y = b_bound_size.y - b_roundness,
+    };
+
+    bool horiz_inside = rect_colliding(a_pos, a_horiz_rect, b_pos, b_horiz_rect);
+
+    Vector2 a_vert_rect = {
+        .x = a_bound_size.x - a_roundness,
+        .y = a_bound_size.y,
+    };
+    Vector2 b_vert_rect = {
+        .x = b_bound_size.x - b_roundness,
+        .y = b_bound_size.y,
+    };
+
+    bool vert_inside = rect_colliding(a_pos, a_vert_rect, b_pos, b_vert_rect);
+
+    if (horiz_inside | vert_inside)
+        return true;
+
+    // circles :(
+
+    Vector2 a_circle_centre_offset = vector2_sub_f(a_bound_size, a_roundness);
+    Vector2 b_circle_centre_offset = vector2_sub_f(b_bound_size, b_roundness);
+
+    Vector2 circles[4] = {
+        {.x =  1.0f, .y =  1.0f },
+        {.x =  1.0f, .y = -1.0f },
+        {.x = -1.0f, .y =  1.0f },
+        {.x = -1.0f, .y = -1.0f },
+    };
+
+    for (U64 i = 0; i < 4; ++i) {
+        Vector2 a_c = vector2_add(a_pos, vector2_mul(a_circle_centre_offset, circles[i]));
+
+        for (U64 j = 0; j < 4; ++j) {
+            Vector2 b_c = vector2_add(b_pos, vector2_mul(b_circle_centre_offset, circles[j]));
+            //printf("%i %f %f, %f %f\n", i*4+j, a_c.x, a_c.y, b_c.x, b_c.y);
+            if (circle_colliding(a_c, a_roundness, b_c, b_roundness))
+                return true;
         }
     }
+
+    return false;
 }
 
 void draw_entities() {
-    ArenaIter iter = arena_iter(&entities.tracking);
+    U64 layers = 1u << ENTITY_FLAGS_RENDER_LAYER_BITS;
+    for (U64 i = 0; i < layers; ++i) {
+        U32 cur_layer = ENTITY_FLAGS_RENDER_LAYER_1 * i;
+        ArenaIter iter = arena_iter(&entities.tracking);
 
-    while (true) {
-        ArenaKey k = arena_iter_next(&iter);
-        if (k.idx == ARENA_INVALID_IDX) break;
-        Entity* e = arena_lookup_Entity(&entities, k);
-
-        if (e->draw != NULL) e->draw(e);
+        while (true) {
+            ArenaKey k = arena_iter_next(&iter);
+            if (k.idx == ARENA_INVALID_IDX) break;
+            Entity* e = arena_lookup_Entity(&entities, k);
+            if ((e->entity_flags & ENTITY_FLAGS_RENDER_LAYER) == cur_layer)
+                if (e->draw != NULL) 
+                    e->draw(e);
+        }
     }
 }
 
-void run_updates() {
+void run_entity_updates() {
     ArenaIter iter = arena_iter(&entities.tracking);
 
     while (true) {
@@ -472,8 +586,30 @@ void run_updates() {
     }
 }
 
+void draw_debug_vector(Entity* e) {
+    Vector2 vector = e->collision_size;
+    Vector2 base = e->position;
+    Vector2 dir = vector2_scale(normalize(vector), 2.0f);
+    Vector2 p1 = vector2_add(base, (Vector2) { dir.y, -dir.x });
+    Vector2 p2 = vector2_add(base, (Vector2) { -dir.y, dir.x });
+
+    DrawTriangle(p1, p2, vector2_add(base, vector), BLACK);
+}
+
+void insert_debug_vector(Vector2 base, Vector2 vector) {
+    arena_insert_Entity(&entities, (Entity) {
+        .entity_type = ENTITY_TYPE_DEBUG,
+        .collision_size = vector,
+        .position = base,
+        .on_collide = NULL,
+        .draw = draw_debug_vector,
+        .update = NULL,
+    });
+}
+
+
 void handle_collision_tank_player(Entity* this, Entity* other) {
-    if (other->entity_flags & ENTITY_FLAGS_STATIC_COLLISION) {
+    if (other->entity_type & ENTITY_TYPE_WALL) {
         this->position = vector2_add(this->position, eject_collision(this, other));
     }
 }
@@ -493,13 +629,16 @@ void draw_tank_player(Entity* e) {
 }
 
 // will fill in entity field in tank
-TankRef insert_tank(Tank t, Entity e) {
+TankInsertReturn insert_tank(Tank t, Entity e) {
     TankRef t_ref = arena_insert_Tank(&tanks, t);
     e.data_ref = t_ref;
     EntityRef e_ref = arena_insert_Entity(&entities, e);
     arena_lookup_Tank(&tanks, t_ref)->e = e_ref;
 
-    return t_ref;
+    return (TankInsertReturn) {
+        .e = e_ref,
+        .t = t_ref,
+    };
 }
 
 void remove_tank(TankRef t) {
@@ -567,23 +706,18 @@ void update_tank_player(Entity* e) {
     if (controls != NULL && player_input_pressed(controls, PlayerInput_Attack1)) {
         // 1 frame buffer
         if (player->bullet_timer <= 1) {
-            //Bullet new_bullet = {
-            //    .data = &default_bullet_data,
-            //    .position = e->position,
-            //    .direction = vector2_dir(player->angle, 1.0),
-            //    .owner = { .type = OwnerType_Player, .player = player }
-            //};
-
             insert_bullet(
                 (Bullet) {
                     .direction = vector2_dir(player->angle, 1.0),
                     .speed = 10.0,
+                    .bounces = 5,
                 },
                 (Entity) {
                     .entity_type = ENTITY_TYPE_BULLET,
-                    .collision_mask = ENTITY_TYPE_ALL,
-                    .entity_flags = ENTITY_FLAGS_COLLISION_CIRCLE,
-                    .collision = { .circle = { .size = 8.0 } },
+                    .collision_mask = ENTITY_TYPE_WALL,
+                    .collision_roundness = 8.0f,
+                    .collision_size = { 8.0f, 8.0f },
+                    .entity_flags = 0,
                     .position = e->position,
                     .on_collide = handle_collision_bullet,
                     .draw = draw_bullet,
@@ -604,43 +738,79 @@ void update_bullet(Entity* e) {
 
     if (e->position.y < 0.0f) {
         b->direction = reflect(b->direction, (Vector2) { .x = 0.0f, .y = 1.0f });
+        b->bounces -= 1;
     } else if (e->position.y > SCREEN_HEIGHT) {
         b->direction = reflect(b->direction, (Vector2) { .x = 0.0f, .y = -1.0f });
+        b->bounces -= 1;
     }
 
     if (e->position.x < 0.0f) {
         b->direction = reflect(b->direction, (Vector2) { .x = 1.0f, .y = 0.0f });
+        b->bounces -= 1;
     } else if (e->position.x > SCREEN_WIDTH) {
         b->direction = reflect(b->direction, (Vector2) { .x = -1.0f, .y = 0.0f });
+        b->bounces -= 1;
+    }
+
+    if (b->bounces <= 0) {
+        remove_bullet(e->data_ref);
     }
 }
 
 void handle_collision_bullet(Entity* this, Entity* other) {
-    if (other->entity_flags & ENTITY_FLAGS_STATIC_COLLISION) {
+    if (other->entity_type & ENTITY_TYPE_WALL) {
         //remove_bullet(this->data_ref);
 
         Vector2 eject = eject_collision(this, other);
-        this->position = vector2_add(this->position, eject);
         Vector2 normal = normalize(eject);
+        insert_debug_vector(this->position, vector2_scale(normal, 20.0f));
+        this->position = vector2_add(this->position, eject);
+        assert(!colliding(this, other));
+        printf("normal %f %f\n", normal.x, normal.y);
         
         Bullet* b = arena_lookup_Bullet(&bullets, this->data_ref);
+
         b->direction = reflect(b->direction, normal);
+        remove_bullet(this->data_ref);
+        //insert_bullet(
+        //    (Bullet) {
+        //        .direction = reflect(b->direction, normal),
+        //        .speed = 10.0,
+        //        .bounces = 5,
+        //    },
+        //    (Entity) {
+        //        .entity_type = ENTITY_TYPE_BULLET,
+        //        .collision_mask = ENTITY_TYPE_WALL,
+        //        .collision_roundness = 8.0f,
+        //        .collision_size = { 8.0f, 8.0f },
+        //        .entity_flags = 0,
+        //        .position = this->position,
+        //        .on_collide = handle_collision_bullet,
+        //        .draw = draw_bullet,
+        //        .update = update_bullet,
+        //    }
+        //);
+
+        b->direction = vector2_scale(b->direction, -1.0f);
     }
 }
 
 void draw_bullet(Entity* e) {
     //Bullet* b = arena_lookup_Bullet(&bullets, e->data_ref);
-    draw_circle_v_aa(e->position, e->collision.circle.size, RED);
+    draw_circle_v_aa(e->position, e->collision_roundness, RED);
 }
 
 // will fill in entity field in tank
-BulletRef insert_bullet(Bullet t, Entity e) {
+BulletInsertReturn insert_bullet(Bullet t, Entity e) {
     BulletRef b_ref = arena_insert_Bullet(&bullets, t);
     e.data_ref = b_ref;
     EntityRef e_ref = arena_insert_Entity(&entities, e);
     arena_lookup_Bullet(&bullets, b_ref)->e = e_ref;
 
-    return b_ref;
+    return (BulletInsertReturn) {
+        .e = e_ref,
+        .b = b_ref,
+    };
 }
 
 void remove_bullet(BulletRef t) {
@@ -648,255 +818,3 @@ void remove_bullet(BulletRef t) {
     arena_remove_Bullet(&bullets, t);
     arena_remove_Entity(&entities, e);
 }
-
-
-//int spawn_bullet(Bullet new_bullet) {
-//    if (bullet_count == MAX_BULLETS) {
-//        return 1;
-//    }
-//
-//    bullets[bullet_count] = new_bullet;
-//    bullet_count += 1;
-//
-//    return 0;
-//}
-//
-//void update_bullets() {
-//    for (int i = 0; i < bullet_count; ++i) {
-//        Bullet* b = &bullets[i];
-//        b->data->update(b);
-//
-//        Vector2 pos = b->position;
-//        if (pos.x < 0 || pos.x > SCREEN_WIDTH || pos.y < 0 || pos.y > SCREEN_HEIGHT) {
-//            remove_bullet(i);
-//        } 
-//    }
-//}
-//
-//void remove_bullet(int i) {
-//    memmove(&bullets[i], &bullets[i+1], (bullet_count-i-1) * sizeof(Bullet));
-//    --bullet_count;
-//}
-//
-//void draw_bullets() {
-//    for (int i = 0; i < bullet_count; ++i) {
-//        draw_circle_v_aa(bullets[i].position, 6.0, BLUE);
-//    }
-//}
-//
-//int spawn_enemy(Enemy new_enemy) {
-//    if (enemy_count == MAX_ENEMIES) {
-//        return 1;
-//    }
-//
-//    enemies[enemy_count] = new_enemy.tag;
-//    enemy_data[enemy_count] = new_enemy.data;
-//    enemy_count += 1;
-//
-//    return 0;
-//}
-//
-//void remove_enemy(int i) {
-//    memmove(&enemies[i], &enemies[i+1], (enemy_count-i-1) * sizeof(EnemyTag));
-//    memmove(&enemy_data[i], &enemy_data[i+1], (enemy_count-i-1) * sizeof(EnemyData));
-//    --enemy_count;
-//}
-//
-//void update_enemies(Player* player) {
-//    for (int i = 0; i < enemy_count; ++i) {
-//        EnemyTag e = enemies[i];
-//        EnemyData data = enemy_data[i];
-//
-//        switch (e.type) {
-//            case EnemyType_Test: {
-//                Vector2 dir = normalize(vector2_sub(player->position, e.position));
-//                e.position = vector2_add(e.position, vector2_scale(dir, ENEMY_SPEED));
-//                break;
-//            }
-//            default: {
-//                printf("Unknown enemy type\n");
-//                break;
-//            }
-//        }
-//
-//        if (data.invincibility_timer > 0) {
-//            data.invincibility_timer -= 1;
-//
-//            if (data.invincibility_timer == 0) {
-//                e.flags &= ~EnemyFlag_Invincible;
-//            } 
-//        }
-//
-//        if (data.knockback_timer > 0) {
-//            data.knockback_timer -= 1;
-//
-//            e.position = vector2_add(e.position, data.knockback);
-//        }
-//
-//        e.position.x = clamp(e.position.x, 0, SCREEN_WIDTH);
-//        e.position.y = clamp(e.position.y, 0, SCREEN_HEIGHT);
-//
-//        if (data.death_timer > 0) {
-//            data.death_timer -= 1;
-//
-//            if (data.death_timer == 0) {
-//                remove_enemy(i);
-//                i -= 1;
-//                continue;
-//            }
-//        }
-//
-//        enemies[i] = e;
-//        enemy_data[i] = data;
-//    }
-//}
-//
-//void resolve_enemy_enemy_collisions() {
-//    while (1) {
-//        bool collided = false;
-//
-//        for (int i = 0; i < enemy_count; ++i) {
-//            for (int j = i+1; j < enemy_count; ++j) {
-//                EnemyTag e1 = enemies[i];
-//                EnemyTag e2 = enemies[j];
-//
-//                if (colliding(
-//                    e1.position,
-//                    e1.enemy_collision_size,
-//                    e2.position,
-//                    e2.enemy_collision_size
-//                )) {
-//                    collided = true;
-//
-//                    float diff = distance(e1.position, e2.position);
-//                    float overlap = (e1.enemy_collision_size + e2.enemy_collision_size) - diff + 0.01f;
-//                    Vector2 dir = normalize(vector2_sub(e1.position, e2.position));
-//                    Vector2 shift1 = vector2_scale(dir, 0.5f * overlap);
-//                    Vector2 shift2 = vector2_scale(dir, -0.5f * overlap);
-//
-//                    enemies[i].position = vector2_add(e1.position, shift1);
-//                    enemies[j].position = vector2_add(e2.position, shift2);
-//                }
-//            }
-//        }
-//
-//        if (!collided) { 
-//            break; 
-//        }
-//    }
-//}
-//
-//void resolve_entity_collisions(Tank** tanks, int tank_count) {
-//    for (int i = 0; i < tank_count; ++i) {
-//        Tank* t = tanks[i];
-//        TankStats* stats = t->stats;
-//
-//        Vector2 position = t->position;
-//        float hurtbox_size = stats->hurtbox_size;
-//
-//        for (int j = 0; j < bullet_count; ++j) {
-//            Bullet b = bullets[j];
-//            
-//            if ((b.interaction_mask & ) {
-//                continue;
-//            }
-//
-//            if (colliding(
-//                position,
-//                hurtbox_size,
-//                b.position,
-//                b.collision_size
-//            )) {
-//                remove_bullet(j);
-//                j -= 1;
-//                player_take_damage(b.damage);
-//            }
-//        }
-//    }
-//}
-//
-//void resolve_player_player_collisions(Player** players, int player_count) {
-//    while (1) {
-//        bool collided = false;
-//
-//        for (int i = 0; i < player_count; ++i) {
-//            for (int j = i+1; j < player_count; ++j) {
-//                Player* p1 = players[i];
-//                Vector2 p1_position = p1->position;
-//                float p1_hurtbox_size = p1->hurtbox_size;
-//
-//                Player* p2 = players[j];
-//                Vector2 p2_position = p2->position;
-//                float p2_hurtbox_size = p2->hurtbox_size;
-//
-//                if (colliding(
-//                    p1_position,
-//                    p1_hurtbox_size,
-//                    p2_position,
-//                    p2_hurtbox_size
-//                )) {
-//                    collided = true;
-//
-//                    float diff = distance(p1_position, p2_position);
-//                    float overlap = (p1_hurtbox_size + p2_hurtbox_size) - diff + 0.01f;
-//                    Vector2 dir = normalize(vector2_sub(p1_position, p2_position));
-//                    Vector2 shift1 = vector2_scale(dir, 0.5f * overlap);
-//                    Vector2 shift2 = vector2_scale(dir, -0.5f * overlap);
-//
-//                    players[i]->position = vector2_add(p1_position, shift1);
-//                    players[j]->position = vector2_add(p2_position, shift2);
-//                }
-//            }
-//        }
-//
-//        if (!collided) { 
-//            break; 
-//        }
-//    }
-//}
-//
-//void draw_enemies() {
-//    for (int i = 0; i < enemy_count; ++i) {
-//        EnemyTag e = enemies[i];
-//        EnemyData data = enemy_data[i];
-//
-//        Color colour = RED;
-//
-//        if (data.knockback_timer > 0) {
-//            colour = BLACK;
-//        }
-//
-//        float scale = 1.0;
-//
-//        if (data.death_timer > 0) {
-//            scale = ((float) data.death_timer) / ((float) data.death_time);
-//        }
-//
-//        draw_circle_v_aa(e.position, ENEMY_VISUAL_SIZE * scale, colour);
-//    }
-//}
-//
-//void draw_player_hud(Player* player, Side side) {
-//    float health_ratio = (float)player->health / (float)player->max_health;
-//    int x_start;
-//    switch (side) {
-//        case Side_Left: {
-//            x_start = 0;
-//            break;
-//        }
-//        case Side_Right: {
-//            x_start = SCREEN_WIDTH / 2;
-//            break;
-//        }
-//        default: {
-//            fprintf(stderr, "ERROR: invalid side\n");
-//            x_start = 0;
-//        }
-//    }
-//
-//    int width = (float)(SCREEN_WIDTH) * 0.5 * health_ratio;
-//    DrawRectangle(x_start, 0, width, 20, player->body_colour);
-//}
-//
-//void draw_general_hud() {
-//}
