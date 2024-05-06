@@ -1,12 +1,13 @@
 #include "game.h"
 
-TODO line 471
-
 int main(void) {
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Game");
     SetTargetFPS(60);
 
     SceneTransition transition = { .next_scene_type = SceneType_MainMenu };
+    //SceneTransition transition = { .next_scene_type = SceneType_SinglePlayer };
+
+    st = init_game_state();
 
     while (true) {
         switch (transition.next_scene_type) {
@@ -36,14 +37,24 @@ int main(void) {
                 transition = run_menu(controls_menu, CONTROLS_MENU_SIZE);
                 break;
             }
-            case SceneType_SetControls: {
-                printf("scene transition to Set controls\n");
-                transition = run_set_controls(transition.set_controls_target);
+            case SceneType_SetPlayerControls: {
+                printf("scene transition to Set player controls\n");
+                transition = run_set_player_controls(transition.set_player_controls_target);
+                break;
+            }
+            case SceneType_SetTrainingControls: {
+                printf("scene transition to set training controls\n");
+                transition = run_set_training_controls(transition.set_training_controls_target);
                 break;
             }
             case SceneType_SinglePlayer: {
                 printf("scene transition to Singleplayer\n");
                 transition = run_singleplayer();
+                break;
+            }
+            case SceneType_Training: {
+                printf("scene transition to Singleplayer\n");
+                transition = run_training();
                 break;
             }
             case SceneType_MultiPlayer: {
@@ -58,9 +69,11 @@ int main(void) {
             }
         }
     }
+
+    dealloc_game_state(&st);
 }
 
-SceneTransition run_set_controls(Controls* controls) {
+SceneTransition run_set_player_controls(PlayerControls* controls) {
     U64 button_idx = 0;
 
     // clear button press queue so you don't instantly map key
@@ -134,7 +147,77 @@ SceneTransition run_set_controls(Controls* controls) {
 
     return (SceneTransition) {
         .next_scene_type = SceneType_Err,
-        .err = "invalid transition from run_set_controls"
+        .err = "invalid transition from run_set_player_controls"
+    };
+}
+
+SceneTransition run_set_training_controls(TrainingControls* controls) {
+    U64 button_idx = 0;
+
+    // clear button press queue so you don't instantly map key
+    while (GetKeyPressed()) {}
+
+    while (true) {
+        // update -------------------------------------------------
+        if (WindowShouldClose()) {
+            return (SceneTransition) {
+                .next_scene_type = SceneType_Exit
+            };
+        }
+
+        for (U64 gamepad = 0; IsGamepadAvailable(gamepad); ++gamepad) {
+            for (U64 button = 0; button < 256; ++button) {
+                if (IsGamepadButtonPressed(gamepad, button)) {
+                    controls->map[button_idx] = (PlayerInputMapping) {
+                        .source_type = PlayerInputSourceType_Gamepad,
+                        .gamepad_input = { gamepad, button }
+                    };
+                    button_idx += 1;
+                }
+            }
+        }
+
+        U64 key = GetKeyPressed();
+        if (key) {
+            controls->map[button_idx] = (PlayerInputMapping) {
+                .source_type = PlayerInputSourceType_Keyboard,
+                .keyboard_input = key,
+            };
+            button_idx += 1;
+        }
+
+        if (button_idx == 9) {
+            return (SceneTransition) {
+                .next_scene_type = SceneType_SetControlsMenu,
+            };
+        }
+
+        // draw ----------------------------------------------------
+        BeginDrawing();
+
+        ClearBackground(RAYWHITE);
+        
+        const char* text;
+        switch (button_idx) {
+            case 0: text = "Press button for resetting training mode..."; break;
+            default: text = "ERROR";
+        }
+
+        U64 text_size = 40;
+        U64 text_height = 40; // approximate
+
+        U64 text_width = MeasureText(text, text_size);
+        U64 text_x = (SCREEN_WIDTH - text_width) / 2;
+        U64 text_y = (SCREEN_HEIGHT - text_height) / 2;
+
+        DrawText(text, text_x, text_y, text_size, (Color) MENU_TEXT_COLOUR);
+
+        EndDrawing();
+    }
+
+    return (SceneTransition) {
+        .next_scene_type = SceneType_Err,
+        .err = "invalid transition from run_set_training_controls"
     };
 }
 
@@ -226,13 +309,7 @@ SceneTransition run_menu(const MenuItem* menu, U32 menu_len) {
 }
 
 SceneTransition run_multiplayer() {
-    entities = arena_create_Entity();
-    tanks = arena_create_Tank();
-    bullets = arena_create_Bullet();
-
-    arena_dealloc_Entity(&entities);
-    arena_dealloc_Tank(&tanks);
-    arena_dealloc_Bullet(&bullets);
+    reset_game_state(&st);
 
     return (SceneTransition) {
         .next_scene_type = SceneType_MainMenu
@@ -250,26 +327,63 @@ void draw_wall(Entity* e) {
         .width = size.x*2.0f,
         .height = size.y*2.0f,
     };
-    DrawRectangleRounded(rect, e->collision_roundness / fmin(size.x, size.y), 5, GRAY);
-    //draw_circle_v_aa(e->position, size, GRAY);
-    //DrawRectangleV(e->position, size, GRAY);
+    draw_rectangle_rounded_aa(rect, r / fmin(size.x, size.y), GRAY);
 }
 
-SceneTransition run_singleplayer() {
-    entities = arena_create_Entity();
-    tanks = arena_create_Tank();
-    bullets = arena_create_Bullet();
-
-    arena_insert_Entity(&entities, (Entity) {
+void insert_borders() {
+    Entity border = {
         .entity_type = ENTITY_TYPE_WALL,
         .entity_flags = 0,
-        .collision_roundness = 45.0f,
-        .collision_size = { 50.0f, 50.0f },
-        .position = { .x = SCREEN_WIDTH / 2, .y = SCREEN_HEIGHT / 2 },
+        .collision_roundness = 0.0f,
         .on_collide = NULL,
         .draw = draw_wall,
         .update = NULL,
+        .destroy = NULL,
+    };
+
+    F32 border_size = 10.0f;
+
+    border.position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 0.0f };
+    border.collision_size = (Vector2) { .x = SCREEN_WIDTH, .y = border_size };
+    insert_entity(border);
+    border.position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = SCREEN_HEIGHT };
+    insert_entity(border);
+
+    border.position = (Vector2) { .x = 0.0f, .y = SCREEN_HEIGHT / 2 };
+    border.collision_size = (Vector2) { .x = border_size, .y = SCREEN_HEIGHT };
+    insert_entity(border);
+    border.position = (Vector2) { .x = SCREEN_WIDTH, .y = SCREEN_HEIGHT / 2 };
+    insert_entity(border);
+}
+
+SceneTransition run_singleplayer() {
+    reset_game_state(&st);
+
+    insert_entity((Entity) {
+        .entity_type = ENTITY_TYPE_WALL,
+        .entity_flags = 0,
+        .collision_roundness = 40.0f,
+        .collision_size = { 70.0f, 50.0f },
+        .position = { .x = SCREEN_WIDTH / 3, .y = SCREEN_HEIGHT / 3 },
+        .on_collide = NULL,
+        .draw = draw_wall,
+        .update = NULL,
+        .destroy = NULL,
     });
+
+    insert_entity((Entity) {
+        .entity_type = ENTITY_TYPE_WALL,
+        .entity_flags = 0,
+        .collision_roundness = 50.0f,
+        .collision_size = { 70.0f, 50.0f },
+        .position = { .x = 2 * SCREEN_WIDTH / 3, .y = 2 * SCREEN_HEIGHT / 3 },
+        .on_collide = NULL,
+        .draw = draw_wall,
+        .update = NULL,
+        .destroy = NULL,
+    });
+
+    insert_borders();
 
     insert_tank(
         (Tank) {
@@ -283,56 +397,31 @@ SceneTransition run_singleplayer() {
             .health = 100,
         },
         (Entity) {
-            .entity_type = ENTITY_TYPE_TANK_PLAYER,
+            .entity_type = ENTITY_TYPE_TANK,
             .collision_mask = ENTITY_TYPE_WALL,
             .collision_roundness = default_tank.size,
             .collision_size = { default_tank.size, default_tank.size },
             .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
             .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
             .on_collide = handle_collision_tank_player,
-            .draw = draw_tank_player,
+            .draw = draw_tank,
             .update = update_tank_player,
+            .destroy = destroy_tank,
         }
     );
-
-    U64 frame_num = 0;
 
     SceneTransition transistion = {
         .next_scene_type = SceneType_MainMenu
     };
 
     while (true) {
-        //if ((frame_num & 63) == 0) {
-        //    float angle = GetRandomValue(0, 360);
-        //    Vector2 position;
-        //    if (angle < 90.0f) {
-        //        position = (Vector2) { .x = (angle / 90.0f) * SCREEN_WIDTH, .y = 0.0f };
-        //    } else if (angle < 180.0f) {
-        //        position = (Vector2) { .x = ((angle - 90.0f) / 90.0f) * SCREEN_WIDTH, .y = SCREEN_HEIGHT };
-        //    } else if (angle < 270.0f) {
-        //        position = (Vector2) { .x = 0.0f, .y = ((angle - 180.0f) / 90.0f) * SCREEN_HEIGHT };
-        //    } else {
-        //        position = (Vector2) { .x = SCREEN_WIDTH, .y = ((angle - 270.0f) / 90.0f) * SCREEN_HEIGHT };
-        //    }
-
-        //    spawn_enemy(enemy_test(position));
-        //}
-
-        //// update ----------------------------------------------------
-
         run_entity_updates();
         run_collision_checks();
 
-        // draw ----------------------------------------------------
         BeginDrawing();
-
         ClearBackground(RAYWHITE);
-
         draw_entities();
-
         EndDrawing();
-
-        ++frame_num;
 
         if (WindowShouldClose()) {
             transistion = (SceneTransition) {
@@ -340,24 +429,158 @@ SceneTransition run_singleplayer() {
             };
             break;
         }
-
-        //if (player.dead) break;
     }
-
-    arena_dealloc_Entity(&entities);
-    arena_dealloc_Tank(&tanks);
-    arena_dealloc_Bullet(&bullets);
 
     return transistion;
 }
 
+SceneTransition run_training() {
+    reset_game_state(&st);
+
+    // player
+    insert_tank(
+        (Tank) {
+            .stats = &default_tank,
+            .body_colour = { 190, 33, 55, 255 },
+            .controls = &player1_controls,
+            .velocity = 0,
+            .angle = -90.0f,
+            .angle_velocity = 0.0f,
+            .bullet_timer = 0,
+            .health = 100,
+        },
+        (Entity) {
+            .entity_type = ENTITY_TYPE_TANK,
+            .collision_mask = ENTITY_TYPE_WALL,
+            .collision_roundness = default_tank.size,
+            .collision_size = { default_tank.size, default_tank.size },
+            .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
+            .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
+            .on_collide = handle_collision_tank_player,
+            .draw = draw_tank,
+            .update = update_tank_player,
+            .destroy = destroy_tank,
+        }
+    );
+
+    // training dummy
+    insert_tank(
+        (Tank) {
+            .stats = &default_tank,
+            .body_colour = { 100, 100, 100, 255 },
+            .controls = NULL,
+            .velocity = 0,
+            .angle = 90.0f,
+            .angle_velocity = 0.0f,
+            .bullet_timer = 0,
+            .health = 100,
+        },
+        (Entity) {
+            .entity_type = ENTITY_TYPE_TANK,
+            .collision_mask = ENTITY_TYPE_WALL,
+            .collision_roundness = default_tank.size,
+            .collision_size = { default_tank.size, default_tank.size },
+            .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
+            .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 1 * SCREEN_HEIGHT / 4 },
+            .on_collide = handle_collision_tank_player,
+            .draw = draw_tank,
+            .update = update_tank_training_dummy,
+            .destroy = destroy_tank,
+        }
+    );
+
+    insert_borders();
+
+    SceneTransition transistion = {
+        .next_scene_type = SceneType_MainMenu
+    };
+
+    bool playing = true;
+    bool frame_advance = false;
+
+    U32 frame_advance_down_timer = 0;
+
+    while (true) {
+        // training input ----------------------------------------------------
+
+        if (training_input_pressed(&training_controls, TrainingInput_Reset)) {
+            reset_game_state(&st);
+        }
+
+        if (training_input_pressed(&training_controls, TrainingInput_TogglePlaying)) {
+            playing = !playing;
+        }
+
+        if (training_input_down(&training_controls, TrainingInput_FrameAdvance)) {
+            if (frame_advance_down_timer == 0) {
+                playing = false;
+                frame_advance = true;
+            }
+
+            if (frame_advance_down_timer == 30) {
+                playing = false;
+                frame_advance = true;
+                frame_advance_down_timer = 29;
+            } else {
+                frame_advance_down_timer += 1;
+            }
+        } else {
+            frame_advance_down_timer = 0;
+        }
+
+        // game loop ----------------------------------------------------
+
+        if (playing || frame_advance) {
+            run_entity_updates();
+            run_collision_checks();
+            frame_advance = false;
+        }
+
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+        draw_entities();
+        EndDrawing();
+
+        if (WindowShouldClose()) {
+            transistion = (SceneTransition) {
+                .next_scene_type = SceneType_Exit
+            };
+            break;
+        }
+    }
+
+    return transistion;
+}
+
+EntityRef insert_entity(Entity e) {
+    return arena_insert_Entity(&st.entities, e);
+}
+
+EntityRef entity_ref(Entity* e) {
+    I64 idx = e - st.entities.backing;
+    assert(idx < st.entities.tracking.element_num);
+    U16 gen = st.entities.tracking.generations[idx];
+    return (EntityRef) {
+        .gen = gen,
+        .idx = idx,
+    };
+}
+
+void destroy_entity(EntityRef e_ref) {
+    Entity* e = arena_lookup_Entity(&st.entities, e_ref);
+    if (e->destroy != NULL) {
+        e->destroy(e);
+    }
+    arena_remove_Entity(&st.entities, e_ref);
+}
+
 void run_collision_checks() {
-    ArenaIter iter1 = arena_iter(&entities.tracking);
+    ArenaIter iter1 = arena_iter(&st.entities.tracking);
 
     while (true) {
         ArenaKey k1 = arena_iter_next(&iter1);
         if (k1.idx == ARENA_INVALID_IDX) break;
-        Entity* e1 = arena_lookup_Entity(&entities, k1);
+        Entity* e1 = arena_lookup_Entity(&st.entities, k1);
         if (e1->entity_flags & ENTITY_FLAGS_COLLISION_NONE)
             continue;
 
@@ -369,7 +592,7 @@ void run_collision_checks() {
         while (true) {
             ArenaKey k2 = arena_iter_next(&iter2);
             if (k2.idx == ARENA_INVALID_IDX) break;
-            Entity* e2 = arena_lookup_Entity(&entities, k2);
+            Entity* e2 = arena_lookup_Entity(&st.entities, k2);
             EntityTypeMask etype2 = e2->entity_type;
             EntityTypeMask coll2 = e2->collision_mask;
             
@@ -392,7 +615,6 @@ static bool rect_colliding(Vector2 pos_a, Vector2 size_a, Vector2 pos_b, Vector2
 }
 
 static bool circle_colliding(Vector2 pos_a, F32 size_a, Vector2 pos_b, F32 size_b) {
-    printf("%f %f %f ; %f %f %f\n", pos_a.x, pos_a.y, size_a, pos_b.x, pos_b.y, size_b);
     Vector2 diff = vector2_sub(pos_a, pos_b);
     F32 diff_len_sq = vector2_dot(diff, diff);
     F32 size = size_a + size_b;
@@ -465,22 +687,31 @@ Vector2 eject_collision(Entity* a, Entity* b) {
         {.x = -1.0f, .y = -1.0f },
     };
 
+    F32 closest_dist_sq = 10000000.0f;
+    Vector2 closest_eject = { .x = 0.0f, .y = 0.0f }; 
+
+    F32 max_circle_dist = a_roundness + b_roundness;
+    F32 max_circle_dist_sq = max_circle_dist * max_circle_dist;
+
     for (U64 i = 0; i < 4; ++i) {
         Vector2 a_c = vector2_add(a_pos, vector2_mul(a_circle_centre_offset, circles[i]));
 
         for (U64 j = 0; j < 4; ++j) {
             Vector2 b_c = vector2_add(b_pos, vector2_mul(b_circle_centre_offset, circles[j]));
-            // TODO find closest circle
-            if (circle_colliding(a_c, a_roundness, b_c, b_roundness)) {
-                Vector2 diff = vector2_sub(a_c, b_c);
-                F32 diff_len = length(diff);
-                F32 overlap = (a_roundness + b_roundness) - diff_len + COLLISION_EPSILON;
-                return vector2_scale(diff, overlap / diff_len);
+            
+            Vector2 diff = vector2_sub(a_c, b_c);
+            F32 diff_len_sq = vector2_dot(diff, diff);
+            if (diff_len_sq + COLLISION_EPSILON <= max_circle_dist_sq && diff_len_sq < closest_dist_sq) {
+                closest_dist_sq = diff_len_sq;
+
+                F32 diff_len = fsqrt(diff_len_sq);
+                F32 overlap = max_circle_dist - diff_len + COLLISION_EPSILON;
+                closest_eject = vector2_scale(diff, overlap / diff_len);
             }
         }
     }
 
-    return (Vector2) { .x = 0.0f, .y = 0.0f };
+    return closest_eject;
 }
 
 // does not handle rotation yet
@@ -548,7 +779,6 @@ bool colliding(Entity* a, Entity* b) {
 
         for (U64 j = 0; j < 4; ++j) {
             Vector2 b_c = vector2_add(b_pos, vector2_mul(b_circle_centre_offset, circles[j]));
-            //printf("%i %f %f, %f %f\n", i*4+j, a_c.x, a_c.y, b_c.x, b_c.y);
             if (circle_colliding(a_c, a_roundness, b_c, b_roundness))
                 return true;
         }
@@ -561,12 +791,12 @@ void draw_entities() {
     U64 layers = 1u << ENTITY_FLAGS_RENDER_LAYER_BITS;
     for (U64 i = 0; i < layers; ++i) {
         U32 cur_layer = ENTITY_FLAGS_RENDER_LAYER_1 * i;
-        ArenaIter iter = arena_iter(&entities.tracking);
+        ArenaIter iter = arena_iter(&st.entities.tracking);
 
         while (true) {
             ArenaKey k = arena_iter_next(&iter);
             if (k.idx == ARENA_INVALID_IDX) break;
-            Entity* e = arena_lookup_Entity(&entities, k);
+            Entity* e = arena_lookup_Entity(&st.entities, k);
             if ((e->entity_flags & ENTITY_FLAGS_RENDER_LAYER) == cur_layer)
                 if (e->draw != NULL) 
                     e->draw(e);
@@ -575,12 +805,12 @@ void draw_entities() {
 }
 
 void run_entity_updates() {
-    ArenaIter iter = arena_iter(&entities.tracking);
+    ArenaIter iter = arena_iter(&st.entities.tracking);
 
     while (true) {
         ArenaKey k = arena_iter_next(&iter);
         if (k.idx == ARENA_INVALID_IDX) break;
-        Entity* e = arena_lookup_Entity(&entities, k);
+        Entity* e = arena_lookup_Entity(&st.entities, k);
 
         if (e->update != NULL) e->update(e);
     }
@@ -597,13 +827,14 @@ void draw_debug_vector(Entity* e) {
 }
 
 void insert_debug_vector(Vector2 base, Vector2 vector) {
-    arena_insert_Entity(&entities, (Entity) {
+    insert_entity((Entity) {
         .entity_type = ENTITY_TYPE_DEBUG,
         .collision_size = vector,
         .position = base,
         .on_collide = NULL,
         .draw = draw_debug_vector,
         .update = NULL,
+        .destroy = NULL,
     });
 }
 
@@ -614,26 +845,26 @@ void handle_collision_tank_player(Entity* this, Entity* other) {
     }
 }
 
-void draw_tank_player(Entity* e) {
-    Tank* player = arena_lookup_Tank(&tanks, e->data_ref);
+void draw_tank(Entity* e) {
+    Tank* t = arena_lookup_Tank(&st.tanks, e->data_ref);
 
-    Color player_colour;
-    if (player->bullet_timer != 0) {
-        player_colour = BLACK;
+    Color colour;
+    if (t->bullet_timer != 0) {
+        colour = BLACK;
     } else {
-        player_colour = player->body_colour;
+        colour = t->body_colour;
     }
-    draw_circle_v_aa(e->position, player->stats->size, player_colour);
-    Vector2 head = vector2_add(e->position, vector2_dir(player->angle, 16)); 
+    draw_circle_v_aa(e->position, t->stats->size, colour);
+    Vector2 head = vector2_add(e->position, vector2_dir(t->angle, 16)); 
     draw_circle_v_aa(head, 4, WHITE);
 }
 
-// will fill in entity field in tank
+// will fill in reference fields
 TankInsertReturn insert_tank(Tank t, Entity e) {
-    TankRef t_ref = arena_insert_Tank(&tanks, t);
+    TankRef t_ref = arena_insert_Tank(&st.tanks, t);
     e.data_ref = t_ref;
-    EntityRef e_ref = arena_insert_Entity(&entities, e);
-    arena_lookup_Tank(&tanks, t_ref)->e = e_ref;
+    EntityRef e_ref = insert_entity(e);
+    arena_lookup_Tank(&st.tanks, t_ref)->e = e_ref;
 
     return (TankInsertReturn) {
         .e = e_ref,
@@ -641,76 +872,74 @@ TankInsertReturn insert_tank(Tank t, Entity e) {
     };
 }
 
-void remove_tank(TankRef t) {
-    EntityRef e = arena_lookup_Tank(&tanks, t)->e;
-    arena_remove_Tank(&tanks, t);
-    arena_remove_Entity(&entities, e);
+void destroy_tank(Entity* t) {
+    arena_remove_Tank(&st.tanks, t->data_ref);
 }
 
-void update_tank_player(Entity* e) {
-    Tank* player = arena_lookup_Tank(&tanks, e->data_ref);
-    assert(player != NULL);
-    const TankStats* stats = player->stats;
+static void advance_tank_state(Entity* e, Tank* t, U64 control_states) {
+    const TankStats* stats = t->stats;
 
-    // values -----------------------------------------------------------------------
+    // physics ---------------------------------------------------------
 
-    Controls* controls = player->controls;
-    if (controls != NULL) {
-        bool forward_down = player_input_down(controls, PlayerInput_Forward);
-        bool backward_down = player_input_down(controls, PlayerInput_Backward);
-        if (forward_down && !backward_down) {
-            if (player->velocity < 0.0f)
-                player->velocity = 0.0f;
-            player->velocity += stats->acceleration;
-        }
-        if (backward_down && !forward_down) {
-            if (player->velocity > 0.0f)
-                player->velocity = 0.0f;
-            player->velocity -= stats->acceleration;
-        }
-        if (!forward_down && !backward_down) player->velocity /= 1.8f;
+    bool forward_down = (control_states & (1 << PlayerInput_Forward)) != 0;
+    bool backward_down = (control_states & (1 << PlayerInput_Backward)) != 0;
+    bool left_down = (control_states & (1 << PlayerInput_TurnLeft)) != 0;
+    bool right_down = (control_states & (1 << PlayerInput_TurnRight)) != 0;
 
-        bool left_down = player_input_down(controls, PlayerInput_TurnLeft);
-        bool right_down = player_input_down(controls, PlayerInput_TurnRight);
-
-        if (left_down) player->angle_velocity -= stats->angle_acceleration;
-        if (right_down) player->angle_velocity += stats->angle_acceleration;
-        if (!left_down && !right_down) player->angle_velocity /= 1.8f;
+    if (forward_down && !backward_down) {
+        if (t->velocity < 0.0f)
+            t->velocity = 0.0f;
+        t->velocity += stats->acceleration;
     }
+    if (backward_down && !forward_down) {
+        if (t->velocity > 0.0f)
+            t->velocity = 0.0f;
+        t->velocity -= stats->acceleration;
+    }
+    if (!forward_down && !backward_down) t->velocity /= stats->velocity_decay;
+
+    if (left_down && !right_down) {
+        if (t->angle_velocity > 0.0f)
+            t->angle_velocity = 0.0f;
+        t->angle_velocity -= stats->angle_acceleration;
+    }
+    if (right_down && !left_down) {
+        if (t->angle_velocity < 0.0f)
+            t->angle_velocity = 0.0f;
+        t->angle_velocity += stats->angle_acceleration;
+    }
+    if (!left_down && !right_down) t->angle_velocity /= stats->angle_velocity_decay;
 
     float max_angle_speed = stats->angle_max_speed_fast;
-    if (controls != NULL && player_input_down(controls, PlayerInput_TurnModifier)) {
+    if (control_states & (1 << PlayerInput_TurnModifier)) {
         max_angle_speed = stats->angle_max_speed;
     }
 
-    player->velocity = clamp(player->velocity, -stats->max_speed, stats->max_speed);
-    player->angle_velocity = clamp(player->angle_velocity, -max_angle_speed, max_angle_speed);
-    player->angle += player->angle_velocity;
-    if (player->angle >= 360.0f) player->angle -= 360.0f;
-    if (player->angle < 0.0f) player->angle += 360.0f;
+    t->velocity = clamp(t->velocity, -stats->max_speed, stats->max_speed);
+    t->angle_velocity = clamp(t->angle_velocity, -max_angle_speed, max_angle_speed);
+    t->angle += t->angle_velocity;
+    while (t->angle >= 360.0f) t->angle -= 360.0f;
+    while (t->angle < 0.0f) t->angle += 360.0f;
 
-    // position ----------------------------------------------------------------------
-
-    Vector2 update = vector2_dir(player->angle, player->velocity);
+    Vector2 update = vector2_dir(t->angle, t->velocity);
     e->position = vector2_add(e->position, update);
 
     e->position.x = clamp(e->position.x, 0, SCREEN_WIDTH);
     e->position.y = clamp(e->position.y, 0, SCREEN_HEIGHT);
 
-    // bullets -----------------------------------------------------------------------
+    // bullets -------------------------------------------------------
 
-    if (player->bullet_timer != 0) {
-        --player->bullet_timer;
+    if (t->bullet_timer != 0) {
+        --t->bullet_timer;
     }
 
-    if (controls != NULL && player_input_pressed(controls, PlayerInput_Attack1)) {
+    if (control_states & (1 << PlayerInput_Attack1)) {
         // 1 frame buffer
-        if (player->bullet_timer <= 1) {
+        if (t->bullet_timer <= 1) {
             insert_bullet(
                 (Bullet) {
-                    .direction = vector2_dir(player->angle, 1.0),
+                    .direction = vector2_dir(t->angle, 1.0),
                     .speed = 10.0,
-                    .bounces = 5,
                 },
                 (Entity) {
                     .entity_type = ENTITY_TYPE_BULLET,
@@ -722,76 +951,56 @@ void update_tank_player(Entity* e) {
                     .on_collide = handle_collision_bullet,
                     .draw = draw_bullet,
                     .update = update_bullet,
+                    .destroy = destroy_bullet,
                 }
             );
-            player->bullet_timer = stats->bullet_cooldown;
+            t->bullet_timer = stats->bullet_cooldown;
         }
     }
+}
+
+void update_tank_player(Entity* e) {
+    // physics -----------------------------------------------------------------------
+
+    U64 control_states = 0;
+
+    Tank* player = arena_lookup_Tank(&st.tanks, e->data_ref);
+    PlayerControls* controls = player->controls;
+    if (controls != NULL) {
+        control_states |= player_input_down(controls, PlayerInput_Forward) << PlayerInput_Forward;
+        control_states |= player_input_down(controls, PlayerInput_Backward) << PlayerInput_Backward;
+        control_states |= player_input_down(controls, PlayerInput_TurnLeft) << PlayerInput_TurnLeft;
+        control_states |= player_input_down(controls, PlayerInput_TurnRight) << PlayerInput_TurnRight;
+        control_states |= player_input_down(controls, PlayerInput_TurnModifier) << PlayerInput_TurnModifier;
+        control_states |= player_input_pressed(controls, PlayerInput_Attack1) << PlayerInput_Attack1;
+        control_states |= player_input_pressed(controls, PlayerInput_Attack2) << PlayerInput_Attack2;
+        control_states |= player_input_pressed(controls, PlayerInput_Attack3) << PlayerInput_Attack3;
+        control_states |= player_input_pressed(controls, PlayerInput_Attack4) << PlayerInput_Attack4;
+    }
+
+    advance_tank_state(e, player, control_states);
+}
+
+void update_tank_training_dummy(Entity* e) {
+    Tank* t = arena_lookup_Tank(&st.tanks, e->data_ref);
+    advance_tank_state(e, t, 0);
 }
 
 
 // BULLET ---------------------------------------------------
 
 void update_bullet(Entity* e) {
-    Bullet* b = arena_lookup_Bullet(&bullets, e->data_ref);
+    Bullet* b = arena_lookup_Bullet(&st.bullets, e->data_ref);
     e->position = vector2_add(e->position, vector2_scale(b->direction, b->speed));
-
-    if (e->position.y < 0.0f) {
-        b->direction = reflect(b->direction, (Vector2) { .x = 0.0f, .y = 1.0f });
-        b->bounces -= 1;
-    } else if (e->position.y > SCREEN_HEIGHT) {
-        b->direction = reflect(b->direction, (Vector2) { .x = 0.0f, .y = -1.0f });
-        b->bounces -= 1;
-    }
-
-    if (e->position.x < 0.0f) {
-        b->direction = reflect(b->direction, (Vector2) { .x = 1.0f, .y = 0.0f });
-        b->bounces -= 1;
-    } else if (e->position.x > SCREEN_WIDTH) {
-        b->direction = reflect(b->direction, (Vector2) { .x = -1.0f, .y = 0.0f });
-        b->bounces -= 1;
-    }
-
-    if (b->bounces <= 0) {
-        remove_bullet(e->data_ref);
-    }
 }
 
 void handle_collision_bullet(Entity* this, Entity* other) {
     if (other->entity_type & ENTITY_TYPE_WALL) {
-        //remove_bullet(this->data_ref);
-
-        Vector2 eject = eject_collision(this, other);
-        Vector2 normal = normalize(eject);
-        insert_debug_vector(this->position, vector2_scale(normal, 20.0f));
-        this->position = vector2_add(this->position, eject);
-        assert(!colliding(this, other));
-        printf("normal %f %f\n", normal.x, normal.y);
-        
-        Bullet* b = arena_lookup_Bullet(&bullets, this->data_ref);
-
-        b->direction = reflect(b->direction, normal);
-        remove_bullet(this->data_ref);
-        //insert_bullet(
-        //    (Bullet) {
-        //        .direction = reflect(b->direction, normal),
-        //        .speed = 10.0,
-        //        .bounces = 5,
-        //    },
-        //    (Entity) {
-        //        .entity_type = ENTITY_TYPE_BULLET,
-        //        .collision_mask = ENTITY_TYPE_WALL,
-        //        .collision_roundness = 8.0f,
-        //        .collision_size = { 8.0f, 8.0f },
-        //        .entity_flags = 0,
-        //        .position = this->position,
-        //        .on_collide = handle_collision_bullet,
-        //        .draw = draw_bullet,
-        //        .update = update_bullet,
-        //    }
-        //);
-
-        b->direction = vector2_scale(b->direction, -1.0f);
+        destroy_entity(entity_ref(this));
+        //Vector2 eject = eject_collision(this, other);
+        //Vector2 normal = normalize(eject);
+        //Vector2 old_pos = this->position;
+        //this->position = vector2_add(this->position, eject);
     }
 }
 
@@ -802,10 +1011,10 @@ void draw_bullet(Entity* e) {
 
 // will fill in entity field in tank
 BulletInsertReturn insert_bullet(Bullet t, Entity e) {
-    BulletRef b_ref = arena_insert_Bullet(&bullets, t);
+    BulletRef b_ref = arena_insert_Bullet(&st.bullets, t);
     e.data_ref = b_ref;
-    EntityRef e_ref = arena_insert_Entity(&entities, e);
-    arena_lookup_Bullet(&bullets, b_ref)->e = e_ref;
+    EntityRef e_ref = insert_entity(e);
+    arena_lookup_Bullet(&st.bullets, b_ref)->e = e_ref;
 
     return (BulletInsertReturn) {
         .e = e_ref,
@@ -813,8 +1022,6 @@ BulletInsertReturn insert_bullet(Bullet t, Entity e) {
     };
 }
 
-void remove_bullet(BulletRef t) {
-    EntityRef e = arena_lookup_Bullet(&bullets, t)->e;
-    arena_remove_Bullet(&bullets, t);
-    arena_remove_Entity(&entities, e);
+void destroy_bullet(Entity* t) {
+    arena_remove_Bullet(&st.bullets, t->data_ref);
 }

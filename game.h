@@ -8,7 +8,6 @@
 #include <raylib.h>
 
 #include "controls.h"
-#include <tools.h>
 
 #define SCREEN_WIDTH 800
 #define SCREEN_HEIGHT 800
@@ -19,6 +18,26 @@ void draw_circle_v_aa(Vector2 centre, F32 radius, Color colour) {
     DrawCircleV(centre, radius+AA_SIZE_INCREMENT*2.0, Fade(colour, 0.2));
     DrawCircleV(centre, radius+AA_SIZE_INCREMENT, Fade(colour, 0.5));
     DrawCircleV(centre, radius, colour);
+}
+
+void draw_rectangle_rounded_aa(Rectangle r, F32 roundness, Color colour) {
+    r.x -= AA_SIZE_INCREMENT*2.0f;
+    r.y -= AA_SIZE_INCREMENT*2.0f;
+    r.width += AA_SIZE_INCREMENT*4.0f;
+    r.height += AA_SIZE_INCREMENT*4.0f;
+    DrawRectangleRounded(r, roundness, 16, Fade(colour, 0.2));
+
+    r.x += AA_SIZE_INCREMENT;
+    r.y += AA_SIZE_INCREMENT;
+    r.width -= AA_SIZE_INCREMENT*2.0f;
+    r.height -= AA_SIZE_INCREMENT*2.0f;
+    DrawRectangleRounded(r, roundness, 16, Fade(colour, 0.5));
+
+    r.x += AA_SIZE_INCREMENT;
+    r.y += AA_SIZE_INCREMENT;
+    r.width -= AA_SIZE_INCREMENT*2.0f;
+    r.height -= AA_SIZE_INCREMENT*2.0f;
+    DrawRectangleRounded(r, roundness, 16, colour);
 }
 
 // GENERAL -------------------------------------------------------------
@@ -34,36 +53,39 @@ typedef enum {
     SceneType_MainMenu,
     SceneType_ConfigMenu,
     SceneType_SetControlsMenu,
-    SceneType_SetControls,
+    SceneType_SetPlayerControls,
+    SceneType_SetTrainingControls,
     SceneType_SinglePlayer,
+    SceneType_Training,
     SceneType_MultiPlayer,
 } SceneType;
 
 typedef union {
     char* err;
-    Controls* set_controls_target;
+    PlayerControls* set_player_controls_target;
+    TrainingControls* set_training_controls_target;
 } SceneData;
 
 typedef struct {
     SceneType next_scene_type;
     union {
         const char* err;
-        Controls* set_controls_target;
+        PlayerControls* set_player_controls_target;
+        TrainingControls* set_training_controls_target;
     };
 } SceneTransition;
 
 #define ENTITY_TYPE_DEBUG (1u << 0)
 #define ENTITY_TYPE_WALL (1u << 1)
 #define ENTITY_TYPE_BULLET (1u << 2)
-#define ENTITY_TYPE_TANK_PLAYER (1u << 3)
-#define ENTITY_TYPE_TANK_ENEMY (1u << 4)
+#define ENTITY_TYPE_TANK (1u << 3)
 #define ENTITY_TYPE_ALL (~0)
 typedef U16 EntityTypeMask;
 
 // MENUS ----------------------------------------------------------------
 
 #define MENU_ITEM_WIDTH 400
-#define MENU_ITEM_HEIGHT 150
+#define MENU_ITEM_HEIGHT 130
 #define MENU_ITEM_Y_PADDING 20
 
 #define MENU_TEXT_COLOUR { 0, 0, 0, 255 }
@@ -76,7 +98,7 @@ typedef struct {
     SceneTransition action;
 } MenuItem;
 
-#define MAIN_MENU_SIZE 4
+#define MAIN_MENU_SIZE 5
 static const MenuItem main_menu[MAIN_MENU_SIZE] = {
     {
         .text = "Multiplayer",
@@ -84,6 +106,13 @@ static const MenuItem main_menu[MAIN_MENU_SIZE] = {
         .text_colour = MENU_TEXT_COLOUR,
         .selected_colour = { 255, 200, 50, 255 },
         .action = { SceneType_MultiPlayer }
+    },
+    {
+        .text = "Training",
+        .base_colour = { 200, 40, 200, 255 },
+        .text_colour = MENU_TEXT_COLOUR,
+        .selected_colour = { 220, 80, 220, 255 },
+        .action = { SceneType_Training }
     },
     {
         .text = "Singleplayer",
@@ -126,7 +155,7 @@ static const MenuItem config_menu[CONFIG_MENU_SIZE] = {
     },
 };
 
-#define CONTROLS_MENU_SIZE 3
+#define CONTROLS_MENU_SIZE 4
 static const MenuItem controls_menu[CONTROLS_MENU_SIZE] = {
     {
         .text = "Set P1 Controls",
@@ -134,8 +163,8 @@ static const MenuItem controls_menu[CONTROLS_MENU_SIZE] = {
         .text_colour = MENU_TEXT_COLOUR,
         .selected_colour = { 255, 200, 50, 255 },
         .action = { 
-            .next_scene_type = SceneType_SetControls,
-            .set_controls_target = &player1_controls,
+            .next_scene_type = SceneType_SetPlayerControls,
+            .set_player_controls_target = &player1_controls,
         }
     },
     {
@@ -144,8 +173,18 @@ static const MenuItem controls_menu[CONTROLS_MENU_SIZE] = {
         .text_colour = MENU_TEXT_COLOUR,
         .selected_colour = { 255, 200, 50, 255 },
         .action = { 
-            .next_scene_type = SceneType_SetControls,
-            .set_controls_target = &player2_controls,
+            .next_scene_type = SceneType_SetPlayerControls,
+            .set_player_controls_target = &player2_controls,
+        }
+    },
+    {
+        .text = "Set Training Controls",
+        .base_colour = { 225, 161, 0, 255 },
+        .text_colour = MENU_TEXT_COLOUR,
+        .selected_colour = { 255, 200, 50, 255 },
+        .action = { 
+            .next_scene_type = SceneType_SetTrainingControls,
+            .set_training_controls_target = &training_controls,
         }
     },
     {
@@ -159,50 +198,10 @@ static const MenuItem controls_menu[CONTROLS_MENU_SIZE] = {
 
 SceneTransition run_menu(const MenuItem* menu, U32 menu_len);
 SceneTransition run_singleplayer(void);
+SceneTransition run_training(void);
 SceneTransition run_multiplayer(void);
-SceneTransition run_set_controls(Controls* target_controls);
-
-// INPUT ---------------------------------------------------------------
-
-bool player_input_down(Controls* controls, PlayerInput input) {
-    PlayerInputMapping mapping = controls->map[input];
-    switch (mapping.source_type) {
-        case PlayerInputSourceType_Unmapped: return false;
-        case PlayerInputSourceType_Keyboard: {
-            return IsKeyDown(mapping.keyboard_input);
-        }
-        case PlayerInputSourceType_Gamepad: {
-            GamepadInput g_input = mapping.gamepad_input;
-            return IsGamepadButtonDown(g_input.gamepad, g_input.button);
-        }
-        default: {
-            fprintf(stderr, "ERROR: player input case %i not handled\n", mapping.source_type);
-            return false;
-        }
-    }
-
-    return false;
-}
-
-bool player_input_pressed(Controls* controls, PlayerInput input) {
-    PlayerInputMapping mapping = controls->map[input];
-    switch (mapping.source_type) {
-        case PlayerInputSourceType_Unmapped: return false;
-        case PlayerInputSourceType_Keyboard: {
-            return IsKeyPressed(mapping.keyboard_input);
-        }
-        case PlayerInputSourceType_Gamepad: {
-            GamepadInput g_input = mapping.gamepad_input;
-            return IsGamepadButtonPressed(g_input.gamepad, g_input.button);
-        }
-        default: {
-            fprintf(stderr, "ERROR: player input case %i not handled\n", mapping.source_type);
-            return false;
-        }
-    }
-
-    return false;
-}
+SceneTransition run_set_player_controls(PlayerControls* target_controls);
+SceneTransition run_set_training_controls(TrainingControls* target_controls);
 
 // Collision ------------------------------------------------------------
 
@@ -233,12 +232,16 @@ typedef struct Entity {
     void (*on_collide)(struct Entity* this, struct Entity* other);
     void (*draw)(struct Entity* this);
     void (*update)(struct Entity* this);
+    void (*destroy)(struct Entity* this);
 } Entity;
 
 #define ARENA_TYPE Entity
 #include <arena.h>
-Arena_Entity entities;
 typedef ArenaKey EntityRef;
+
+EntityRef insert_entity(Entity e);
+void destroy_entity(EntityRef e);
+EntityRef entity_ref(Entity* e);
 
 void run_entity_updates();
 void run_collision_checks();
@@ -259,6 +262,8 @@ typedef struct {
     F32 angle_max_speed;
     F32 angle_max_speed_fast;
     F32 size;
+    F32 velocity_decay;
+    F32 angle_velocity_decay;
     I32 bullet_cooldown;
     I32 max_health;
 } TankStats;
@@ -267,7 +272,7 @@ typedef struct Tank {
     EntityRef e;
     const TankStats* stats;
     // might be null
-    Controls* controls;
+    PlayerControls* controls;
     Color body_colour;
     F32 velocity;
     F32 angle; // degrees
@@ -282,15 +287,16 @@ static const TankStats default_tank = {
     .acceleration = 0.5f,
     .angle_max_speed = 2.0f,
     .angle_max_speed_fast = 9.0f,
-    .angle_acceleration = 1.5f,
+    .angle_acceleration = 1.0f,
     .size = 20.0f,
+    .velocity_decay = 1.8f,
+    .angle_velocity_decay = 1.8f,
     .bullet_cooldown = 10,
     .max_health = 100,
 };
 
 #define ARENA_TYPE Tank
 #include <arena.h>
-Arena_Tank tanks;
 typedef ArenaKey TankRef;
 
 typedef struct {
@@ -299,11 +305,12 @@ typedef struct {
 } TankInsertReturn;
 
 TankInsertReturn insert_tank(Tank tank, Entity e);
-void remove_tank(TankRef t);
+void destroy_tank(Entity* t);
 
 void update_tank_player(Entity* e);
+void update_tank_training_dummy(Entity* e);
 void handle_collision_tank_player(Entity* this, Entity* other);
-void draw_tank_player(Entity* e);
+void draw_tank(Entity* e);
 
 // BULLET -------------------------------------------------------------
 
@@ -321,13 +328,11 @@ typedef struct {
 
     Vector2 direction;
     F32 speed;
-    I32 bounces;
     //int subaction_index;
 } Bullet;
 
 #define ARENA_TYPE Bullet
 #include <arena.h>
-Arena_Bullet bullets;
 typedef ArenaKey BulletRef;
 
 typedef struct {
@@ -336,11 +341,51 @@ typedef struct {
 } BulletInsertReturn;
 
 BulletInsertReturn insert_bullet(Bullet tank, Entity e);
-void remove_bullet(BulletRef t);
+void destroy_bullet(Entity* b);
 
 void update_bullet(Entity* e);
 void handle_collision_bullet(Entity* this, Entity* other);
 void draw_bullet(Entity* e);
+
+typedef struct {
+    Arena_Entity entities;
+    Arena_Tank tanks;
+    Arena_Bullet bullets;
+} GameState;
+
+GameState init_game_state(void) {
+    return (GameState) {
+        .entities = arena_create_Entity(),
+        .tanks = arena_create_Tank(),
+        .bullets = arena_create_Bullet(),
+    };
+}
+
+void reset_game_state(GameState* st) {
+    arena_tracking_reset(&st->entities.tracking);
+    arena_tracking_reset(&st->tanks.tracking);
+    arena_tracking_reset(&st->bullets.tracking);
+}
+
+void dealloc_game_state(GameState* st) {
+    arena_dealloc_Entity(&st->entities);
+    arena_dealloc_Tank(&st->tanks);
+    arena_dealloc_Bullet(&st->bullets);
+}
+
+Entity* lookup_entity(GameState* st, EntityRef e) {
+    return arena_lookup_Entity(&st->entities, e);
+}
+
+Bullet* lookup_bullet(GameState* st, BulletRef b) {
+    return arena_lookup_Bullet(&st->bullets, b);
+}
+
+Tank* lookup_tank(GameState* st, TankRef t) {
+    return arena_lookup_Tank(&st->tanks, t);
+}
+
+GameState st;
 
 // HUD ------------------------------------------------------------
 
