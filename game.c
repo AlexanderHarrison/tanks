@@ -434,7 +434,7 @@ SceneTransition run_singleplayer() {
     return transistion;
 }
 
-SceneTransition run_training() {
+static void reset_training() {
     reset_game_state(&st);
 
     // player
@@ -490,6 +490,10 @@ SceneTransition run_training() {
     );
 
     insert_borders();
+}
+
+SceneTransition run_training() {
+    reset_training();
 
     SceneTransition transistion = {
         .next_scene_type = SceneType_MainMenu
@@ -504,7 +508,7 @@ SceneTransition run_training() {
         // training input ----------------------------------------------------
 
         if (training_input_pressed(&training_controls, TrainingInput_Reset)) {
-            reset_game_state(&st);
+            reset_training();
         }
 
         if (training_input_pressed(&training_controls, TrainingInput_TogglePlaying)) {
