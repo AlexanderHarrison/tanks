@@ -58,10 +58,10 @@ PlayerControls player1_controls = {
         { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_A }, // turn cc
         { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_D }, // turn cl
         { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_LEFT_SHIFT }, // turn mod
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_ONE }, // atk1
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_TWO }, // atk2
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_THREE }, // atk3
-        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_FOUR }, // atk4
+        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_H}, // atk1
+        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_J }, // atk2
+        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_K }, // atk3
+        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_L }, // atk4
     }
 };
 

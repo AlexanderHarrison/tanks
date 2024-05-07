@@ -275,7 +275,8 @@ typedef struct {
     F32 size;
     F32 velocity_decay;
     F32 angle_velocity_decay;
-    F32 knockback_decay;
+    F32 knockback_decay_factor;
+    F32 knockback_decay_constant;
     I32 bullet_cooldown;
     I32 max_health;
 } TankStats;
@@ -306,7 +307,8 @@ static const TankStats default_tank = {
     .size = 20.0f,
     .velocity_decay = 1.8f,
     .angle_velocity_decay = 1.8f,
-    .knockback_decay = 1.8f,
+    .knockback_decay_factor = 1.08f,
+    .knockback_decay_constant = 0.2f,
     .bullet_cooldown = 10,
     .max_health = 100,
 };
@@ -383,6 +385,24 @@ GameState init_game_state(void) {
         .tanks = arena_create_Tank(),
         .bullets = arena_create_Bullet(),
     };
+}
+
+// assumes that new is initialized
+void copy_game_state(GameState* old, GameState* new) {
+    memcpy(new->entities.tracking.free, old->entities.tracking.free, ARENA_MAX_ELEMENTS / 8);
+    memcpy(new->entities.tracking.generations, old->entities.tracking.generations, ARENA_MAX_ELEMENTS * sizeof(ArenaGen));
+    memcpy(new->entities.backing, old->entities.backing, ARENA_MAX_ELEMENTS * sizeof(Entity));
+    new->entities.tracking.element_num = old->entities.tracking.element_num;
+
+    memcpy(new->tanks.tracking.free, old->tanks.tracking.free, ARENA_MAX_ELEMENTS / 8);
+    memcpy(new->tanks.tracking.generations, old->tanks.tracking.generations, ARENA_MAX_ELEMENTS * sizeof(ArenaGen));
+    memcpy(new->tanks.backing, old->tanks.backing, ARENA_MAX_ELEMENTS * sizeof(Tank));
+    new->tanks.tracking.element_num = old->tanks.tracking.element_num;
+
+    memcpy(new->bullets.tracking.free, old->bullets.tracking.free, ARENA_MAX_ELEMENTS / 8);
+    memcpy(new->bullets.tracking.generations, old->bullets.tracking.generations, ARENA_MAX_ELEMENTS * sizeof(ArenaGen));
+    memcpy(new->bullets.backing, old->bullets.backing, ARENA_MAX_ELEMENTS * sizeof(Bullet));
+    new->bullets.tracking.element_num = old->bullets.tracking.element_num;
 }
 
 void reset_game_state(GameState* st) {
