@@ -385,7 +385,7 @@ SceneTransition run_singleplayer() {
 
     insert_borders();
 
-    insert_tank(
+    TankRef player = insert_tank(
         (Tank) {
             .stats = &default_tank,
             .body_colour = { 190, 33, 55, 255 },
@@ -410,6 +410,7 @@ SceneTransition run_singleplayer() {
             .destroy = destroy_tank,
         }
     );
+    insert_player_hud(player, (Vector2) { 0.0f, 0.0f }, (Vector2) { SCREEN_WIDTH * 0.5f, 20.0f });
 
     SceneTransition transistion = {
         .next_scene_type = SceneType_MainMenu
@@ -422,6 +423,7 @@ SceneTransition run_singleplayer() {
         BeginDrawing();
         ClearBackground(RAYWHITE);
         draw_entities();
+
         EndDrawing();
 
         if (WindowShouldClose()) {
@@ -441,7 +443,7 @@ static void reset_training() {
     insert_borders();
 
     // player
-    insert_tank(
+    TankRef player = insert_tank(
         (Tank) {
             .stats = &default_tank,
             .body_colour = { 190, 33, 55, 255 },
@@ -466,9 +468,10 @@ static void reset_training() {
             .destroy = destroy_tank,
         }
     );
+    insert_player_hud(player, (Vector2) { 0.0f, 0.0f }, (Vector2) { SCREEN_WIDTH * 0.5f, 20.0f });
 
     // training dummy
-    insert_tank(
+    TankRef dummy = insert_tank(
         (Tank) {
             .stats = &default_tank,
             .body_colour = { 100, 100, 100, 255 },
@@ -493,6 +496,7 @@ static void reset_training() {
             .destroy = destroy_tank,
         }
     );
+    insert_player_hud(dummy, (Vector2) { SCREEN_WIDTH * 0.5f, 0.0f }, (Vector2) { SCREEN_WIDTH * 0.5f, 20.0f });
 }
 
 SceneTransition run_training() {
@@ -884,6 +888,7 @@ void draw_tank(Entity* e) {
     Tank* t = arena_lookup_Tank(&st.tanks, e->data_ref);
 
     Color colour;
+    Vector2 pos = e->position;
     switch (t->state) {
         case TankState_Normal: {
             colour = t->body_colour;
@@ -891,6 +896,11 @@ void draw_tank(Entity* e) {
         }
         case TankState_Cooldown: {
             colour = BLACK;
+            break;
+        }
+        case TankState_Hitstop: {
+            colour = BLUE;
+            pos = vector2_add(pos, t->state_data.hitstop.position_delta);
             break;
         }
         case TankState_Knockback: {
@@ -902,22 +912,22 @@ void draw_tank(Entity* e) {
             break;
         }
     }
-    draw_circle_v_aa(e->position, t->stats->size, colour);
-    Vector2 head = vector2_add(e->position, vector2_dir(t->angle, 16)); 
-    draw_circle_v_aa(head, 4, WHITE);
+    F32 size = t->stats->size;
+    draw_circle_v_aa(pos, size, colour);
+    F32 head_size = size / 5;
+    F32 head_offset = size - head_size;
+    Vector2 head = vector2_add(pos, vector2_dir(t->angle, head_offset)); 
+    draw_circle_v_aa(head, head_size, WHITE);
 }
 
 // will fill in reference fields
-TankInsertReturn insert_tank(Tank t, Entity e) {
+TankRef insert_tank(Tank t, Entity e) {
     TankRef t_ref = arena_insert_Tank(&st.tanks, t);
     e.data_ref = t_ref;
     EntityRef e_ref = insert_entity(e);
     arena_lookup_Tank(&st.tanks, t_ref)->e = e_ref;
 
-    return (TankInsertReturn) {
-        .e = e_ref,
-        .t = t_ref,
-    };
+    return t_ref;
 }
 
 void destroy_tank(Entity* t) {
@@ -926,25 +936,24 @@ void destroy_tank(Entity* t) {
 
 void hit_tank(Entity* e, Tank* t, HitInfo info) {
     (void)(e);
-    t->state = TankState_Knockback;
-    t->knockback_velocity = info.knockback;
-
-    // knockback time calculation
+    t->state = TankState_Hitstop;
+    t->velocity = 0.0f;
+    e->position = vector2_add(e->position, vector2_scale(info.knockback, 0.5f));
 
     F32 v = length(info.knockback);
     F32 d_f = t->stats->knockback_decay_factor;
     F32 d_c = t->stats->knockback_decay_constant;
 
-    U32 iterations = 0;
+    U32 kb_frames = 0;
 
     while (v > 0.5f) {
         v = v * (1.0f / d_f) - d_c;
-        iterations += 1;
+        kb_frames += 1;
     }
 
-    // v(t) = vel - d_c*t
-
-    t->state_data.knockback_timer = iterations;
+    t->state_data.hitstop.queued_knockback_timer = kb_frames;
+    t->state_data.hitstop.queued_knockback = info.knockback;
+    t->state_data.hitstop.timer = 5;
 }
 
 static void advance_tank_state(Entity* e, Tank* t, U64 control_states) {
@@ -967,6 +976,21 @@ switch_state:
                 break;
             } else {
                 t->state = TankState_Normal;
+                goto switch_state;
+            }
+        }
+        case TankState_Hitstop: {
+            if (t->state_data.hitstop.timer) {
+                F32 delta = (F32)t->state_data.hitstop.timer * 0.5f;
+                t->state_data.hitstop.position_delta = vector2_dir(random_angle(), delta);
+                t->state_data.hitstop.timer--;
+                return; // does not advance physics
+            } else {
+                t->knockback_velocity = t->state_data.hitstop.queued_knockback;
+                U32 knockback_timer = t->state_data.hitstop.queued_knockback_timer;
+
+                t->state = TankState_Knockback;
+                t->state_data.knockback_timer = knockback_timer;
                 goto switch_state;
             }
         }
@@ -1165,3 +1189,44 @@ BulletInsertReturn insert_bullet(Bullet t, Entity e) {
 void destroy_bullet(Entity* t) {
     arena_remove_Bullet(&st.bullets, t->data_ref);
 }
+
+EntityRef insert_player_hud(TankRef player, Vector2 hud_pos, Vector2 hud_size) {
+    return insert_entity((Entity) {
+        .data_ref = player,
+        .entity_type = ENTITY_TYPE_HUD,
+        .collision_mask = 0,
+        .entity_flags = ENTITY_FLAGS_COLLISION_NONE | ENTITY_FLAGS_RENDER_LAYER_3,
+        .collision_size = hud_size,
+        .position = hud_pos,
+        .on_collide = NULL,
+        .draw = draw_player_hud,
+        .update = NULL,
+        .destroy = NULL,
+    });
+}
+
+void draw_player_hud(Entity* e) {
+    Tank* t = arena_lookup_Tank(&st.tanks, e->data_ref);
+    if (t == NULL) {
+        printf("hud removed\n");
+        destroy_entity(entity_ref(e));
+        return;
+    }
+
+    Vector2 pos = e->position;
+    Vector2 size = e->collision_size;
+
+    F32 width = ((F32)t->health / (F32)t->stats->max_health) * size.x;
+
+    Rectangle r = {
+        .x = pos.x,
+        .y = pos.y,
+        .width = width,
+        .height = size.y,
+    };
+
+    Color colour = t->body_colour;
+
+    DrawRectangleRec(r, colour);
+}
+//void draw_general_hud();

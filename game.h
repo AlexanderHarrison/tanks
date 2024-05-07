@@ -43,11 +43,6 @@ void draw_rectangle_rounded_aa(Rectangle r, F32 roundness, Color colour) {
 // GENERAL -------------------------------------------------------------
 
 typedef enum {
-    Side_Left,
-    Side_Right,
-} Side;
-
-typedef enum {
     SceneType_Err,
     SceneType_Exit,
     SceneType_MainMenu,
@@ -79,7 +74,7 @@ typedef struct {
 #define ENTITY_TYPE_WALL (1u << 1)
 #define ENTITY_TYPE_BULLET (1u << 2)
 #define ENTITY_TYPE_TANK (1u << 3)
-#define ENTITY_TYPE_ALL (~0)
+#define ENTITY_TYPE_HUD (1u << 4)
 typedef U16 EntityTypeMask;
 
 // MENUS ----------------------------------------------------------------
@@ -258,11 +253,18 @@ void insert_debug_vector(Vector2 base, Vector2 vector);
 typedef enum {
     TankState_Normal = 0,
     TankState_Cooldown,
+    TankState_Hitstop,
     TankState_Knockback,
 } TankState;
 
 typedef union {
     U32 cooldown_timer;
+    struct {
+        Vector2 queued_knockback;
+        Vector2 position_delta;
+        U32 queued_knockback_timer;
+        U32 timer;
+    } hitstop;
     U32 knockback_timer;
 } TankStateData;
 
@@ -283,14 +285,12 @@ typedef struct {
 
 typedef struct Tank {
     EntityRef e;
-    const TankStats* stats;
-    // might be null
-    PlayerControls* controls;
+    const TankStats* stats; // never null
+    PlayerControls* controls; // might be null
     Color body_colour;
     F32 velocity;
     F32 angle; // degrees
     F32 angle_velocity;
-    bool dead;
     I32 health;
 
     Vector2 knockback_velocity;
@@ -317,12 +317,7 @@ static const TankStats default_tank = {
 #include <arena.h>
 typedef ArenaKey TankRef;
 
-typedef struct {
-    EntityRef e;
-    TankRef t;
-} TankInsertReturn;
-
-TankInsertReturn insert_tank(Tank tank, Entity e);
+TankRef insert_tank(Tank tank, Entity e);
 void destroy_tank(Entity* t);
 TankRef tank_ref(Tank* t);
 
@@ -433,8 +428,9 @@ GameState st;
 
 // HUD ------------------------------------------------------------
 
-void draw_player_hud(Tank* player, Side side);
-void draw_general_hud();
+EntityRef insert_player_hud(TankRef player, Vector2 hud_pos, Vector2 hud_size);
+void draw_player_hud(Entity* e);
+//void draw_general_hud();
 
 // MATH -------------------------------------------------------------
 
@@ -521,4 +517,9 @@ Vector2 normalize(Vector2 v) {
         .x = v.x / len,
         .y = v.y / len 
     };
+}
+
+F32 random_angle() {
+    int r = GetRandomValue(0, 359);
+    return (F32)r;
 }
