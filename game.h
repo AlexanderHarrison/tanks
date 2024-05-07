@@ -255,6 +255,17 @@ void insert_debug_vector(Vector2 base, Vector2 vector);
 
 // Tank ------------------------------------------------------------
 
+typedef enum {
+    TankState_Normal = 0,
+    TankState_Cooldown,
+    TankState_Knockback,
+} TankState;
+
+typedef union {
+    U32 cooldown_timer;
+    U32 knockback_timer;
+} TankStateData;
+
 typedef struct {
     F32 max_speed;
     F32 acceleration;
@@ -264,6 +275,7 @@ typedef struct {
     F32 size;
     F32 velocity_decay;
     F32 angle_velocity_decay;
+    F32 knockback_decay;
     I32 bullet_cooldown;
     I32 max_health;
 } TankStats;
@@ -277,9 +289,12 @@ typedef struct Tank {
     F32 velocity;
     F32 angle; // degrees
     F32 angle_velocity;
-    I32 bullet_timer;
     bool dead;
     I32 health;
+
+    Vector2 knockback_velocity;
+    TankState state;
+    TankStateData state_data;
 } Tank;
 
 static const TankStats default_tank = {
@@ -291,6 +306,7 @@ static const TankStats default_tank = {
     .size = 20.0f,
     .velocity_decay = 1.8f,
     .angle_velocity_decay = 1.8f,
+    .knockback_decay = 1.8f,
     .bullet_cooldown = 10,
     .max_health = 100,
 };
@@ -306,11 +322,18 @@ typedef struct {
 
 TankInsertReturn insert_tank(Tank tank, Entity e);
 void destroy_tank(Entity* t);
+TankRef tank_ref(Tank* t);
 
 void update_tank_player(Entity* e);
 void update_tank_training_dummy(Entity* e);
-void handle_collision_tank_player(Entity* this, Entity* other);
+void handle_collision_tank(Entity* this, Entity* other);
 void draw_tank(Entity* e);
+
+typedef struct {
+    Vector2 knockback;
+} HitInfo;
+
+void hit_tank(Entity* e, Tank* t, HitInfo info);
 
 // BULLET -------------------------------------------------------------
 
@@ -326,6 +349,7 @@ void draw_tank(Entity* e);
 typedef struct {
     EntityRef e;
 
+    TankRef owner;
     Vector2 direction;
     F32 speed;
     //int subaction_index;

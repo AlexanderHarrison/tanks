@@ -393,17 +393,18 @@ SceneTransition run_singleplayer() {
             .velocity = 0,
             .angle = -90.0f,
             .angle_velocity = 0.0f,
-            .bullet_timer = 0,
             .health = 100,
+            .knockback_velocity = { .x = 0.0f, .y = 0.0f },
+            .state = TankState_Normal,
         },
         (Entity) {
             .entity_type = ENTITY_TYPE_TANK,
-            .collision_mask = ENTITY_TYPE_WALL,
+            .collision_mask = ENTITY_TYPE_TANK | ENTITY_TYPE_WALL | ENTITY_TYPE_BULLET,
             .collision_roundness = default_tank.size,
             .collision_size = { default_tank.size, default_tank.size },
             .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
             .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
-            .on_collide = handle_collision_tank_player,
+            .on_collide = handle_collision_tank,
             .draw = draw_tank,
             .update = update_tank_player,
             .destroy = destroy_tank,
@@ -437,6 +438,8 @@ SceneTransition run_singleplayer() {
 static void reset_training() {
     reset_game_state(&st);
 
+    insert_borders();
+
     // player
     insert_tank(
         (Tank) {
@@ -446,17 +449,18 @@ static void reset_training() {
             .velocity = 0,
             .angle = -90.0f,
             .angle_velocity = 0.0f,
-            .bullet_timer = 0,
             .health = 100,
+            .knockback_velocity = { .x = 0.0f, .y = 0.0f },
+            .state = TankState_Normal,
         },
         (Entity) {
             .entity_type = ENTITY_TYPE_TANK,
-            .collision_mask = ENTITY_TYPE_WALL,
+            .collision_mask = ENTITY_TYPE_TANK | ENTITY_TYPE_WALL | ENTITY_TYPE_BULLET,
             .collision_roundness = default_tank.size,
             .collision_size = { default_tank.size, default_tank.size },
             .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
             .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
-            .on_collide = handle_collision_tank_player,
+            .on_collide = handle_collision_tank,
             .draw = draw_tank,
             .update = update_tank_player,
             .destroy = destroy_tank,
@@ -472,24 +476,23 @@ static void reset_training() {
             .velocity = 0,
             .angle = 90.0f,
             .angle_velocity = 0.0f,
-            .bullet_timer = 0,
             .health = 100,
+            .knockback_velocity = { .x = 0.0f, .y = 0.0f },
+            .state = TankState_Normal,
         },
         (Entity) {
             .entity_type = ENTITY_TYPE_TANK,
-            .collision_mask = ENTITY_TYPE_WALL,
+            .collision_mask = ENTITY_TYPE_TANK | ENTITY_TYPE_WALL | ENTITY_TYPE_BULLET,
             .collision_roundness = default_tank.size,
             .collision_size = { default_tank.size, default_tank.size },
             .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
             .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 1 * SCREEN_HEIGHT / 4 },
-            .on_collide = handle_collision_tank_player,
+            .on_collide = handle_collision_tank,
             .draw = draw_tank,
             .update = update_tank_training_dummy,
             .destroy = destroy_tank,
         }
     );
-
-    insert_borders();
 }
 
 SceneTransition run_training() {
@@ -565,6 +568,16 @@ EntityRef entity_ref(Entity* e) {
     assert(idx < st.entities.tracking.element_num);
     U16 gen = st.entities.tracking.generations[idx];
     return (EntityRef) {
+        .gen = gen,
+        .idx = idx,
+    };
+}
+
+TankRef tank_ref(Tank* t) {
+    I64 idx = t - st.tanks.backing;
+    assert(idx < st.tanks.tracking.element_num);
+    U16 gen = st.tanks.tracking.generations[idx];
+    return (TankRef) {
         .gen = gen,
         .idx = idx,
     };
@@ -843,9 +856,12 @@ void insert_debug_vector(Vector2 base, Vector2 vector) {
 }
 
 
-void handle_collision_tank_player(Entity* this, Entity* other) {
-    if (other->entity_type & ENTITY_TYPE_WALL) {
+void handle_collision_tank(Entity* this, Entity* other) {
+    EntityTypeMask entity_type = other->entity_type;
+    if (entity_type & ENTITY_TYPE_WALL) {
         this->position = vector2_add(this->position, eject_collision(this, other));
+    } else if (entity_type & ENTITY_TYPE_TANK) {
+        this->position = vector2_add(this->position, vector2_scale(eject_collision(this, other), 0.5f));
     }
 }
 
@@ -853,10 +869,23 @@ void draw_tank(Entity* e) {
     Tank* t = arena_lookup_Tank(&st.tanks, e->data_ref);
 
     Color colour;
-    if (t->bullet_timer != 0) {
-        colour = BLACK;
-    } else {
-        colour = t->body_colour;
+    switch (t->state) {
+        case TankState_Normal: {
+            colour = t->body_colour;
+            break;
+        }
+        case TankState_Cooldown: {
+            colour = BLACK;
+            break;
+        }
+        case TankState_Knockback: {
+            colour = BLUE;
+            break;
+        }
+        default: {
+            printf("unhandled tank state\n");
+            break;
+        }
     }
     draw_circle_v_aa(e->position, t->stats->size, colour);
     Vector2 head = vector2_add(e->position, vector2_dir(t->angle, 16)); 
@@ -880,15 +909,66 @@ void destroy_tank(Entity* t) {
     arena_remove_Tank(&st.tanks, t->data_ref);
 }
 
+void hit_tank(Entity* e, Tank* t, HitInfo info) {
+    (void)(e);
+    t->state = TankState_Knockback;
+    t->knockback_velocity = info.knockback;
+    t->state_data.knockback_timer = 10;
+}
+
 static void advance_tank_state(Entity* e, Tank* t, U64 control_states) {
     const TankStats* stats = t->stats;
 
+    bool actionable = false;
+    bool moveable = false;
+
+switch_state:
+    switch (t->state) {
+        case TankState_Normal: {
+            actionable = true;
+            moveable = true;
+            break;
+        }
+        case TankState_Cooldown: {
+            moveable = true;
+            if (t->state_data.cooldown_timer) {
+                t->state_data.cooldown_timer--;
+                break;
+            } else {
+                t->state = TankState_Normal;
+                goto switch_state;
+            }
+        }
+        case TankState_Knockback: {
+            if (t->state_data.knockback_timer) {
+                t->state_data.knockback_timer--;
+                break;
+            } else {
+                t->state = TankState_Normal;
+                goto switch_state;
+            }
+            break;
+        }
+        default: {
+            printf("unhandled tank state\n");
+            break;
+        }
+    }
+
     // physics ---------------------------------------------------------
 
-    bool forward_down = (control_states & (1 << PlayerInput_Forward)) != 0;
-    bool backward_down = (control_states & (1 << PlayerInput_Backward)) != 0;
-    bool left_down = (control_states & (1 << PlayerInput_TurnLeft)) != 0;
-    bool right_down = (control_states & (1 << PlayerInput_TurnRight)) != 0;
+    bool forward_down = false;
+    bool backward_down = false;
+    bool left_down = false;
+    bool right_down = false;
+    bool turn_mod_down = false;
+    if (moveable) {
+        forward_down = (control_states & (1 << PlayerInput_Forward)) != 0;
+        backward_down = (control_states & (1 << PlayerInput_Backward)) != 0;
+        left_down = (control_states & (1 << PlayerInput_TurnLeft)) != 0;
+        right_down = (control_states & (1 << PlayerInput_TurnRight)) != 0;
+        turn_mod_down = (control_states & (1 << PlayerInput_TurnModifier)) != 0;
+    }
 
     if (forward_down && !backward_down) {
         if (t->velocity < 0.0f)
@@ -915,17 +995,21 @@ static void advance_tank_state(Entity* e, Tank* t, U64 control_states) {
     if (!left_down && !right_down) t->angle_velocity /= stats->angle_velocity_decay;
 
     float max_angle_speed = stats->angle_max_speed_fast;
-    if (control_states & (1 << PlayerInput_TurnModifier)) {
+    if (turn_mod_down) {
         max_angle_speed = stats->angle_max_speed;
     }
 
+    t->knockback_velocity = vector2_scale(t->knockback_velocity, 1.0f / stats->knockback_decay);
     t->velocity = clamp(t->velocity, -stats->max_speed, stats->max_speed);
     t->angle_velocity = clamp(t->angle_velocity, -max_angle_speed, max_angle_speed);
     t->angle += t->angle_velocity;
     while (t->angle >= 360.0f) t->angle -= 360.0f;
     while (t->angle < 0.0f) t->angle += 360.0f;
 
-    Vector2 update = vector2_dir(t->angle, t->velocity);
+    Vector2 update = vector2_add(
+        vector2_dir(t->angle, t->velocity),
+        t->knockback_velocity
+    );
     e->position = vector2_add(e->position, update);
 
     e->position.x = clamp(e->position.x, 0, SCREEN_WIDTH);
@@ -933,21 +1017,17 @@ static void advance_tank_state(Entity* e, Tank* t, U64 control_states) {
 
     // bullets -------------------------------------------------------
 
-    if (t->bullet_timer != 0) {
-        --t->bullet_timer;
-    }
-
-    if (control_states & (1 << PlayerInput_Attack1)) {
-        // 1 frame buffer
-        if (t->bullet_timer <= 1) {
+    if (actionable) {
+        if (control_states & (1 << PlayerInput_Attack1)) {
             insert_bullet(
                 (Bullet) {
+                    .owner = tank_ref(t),
                     .direction = vector2_dir(t->angle, 1.0),
                     .speed = 10.0,
                 },
                 (Entity) {
                     .entity_type = ENTITY_TYPE_BULLET,
-                    .collision_mask = ENTITY_TYPE_WALL,
+                    .collision_mask = ENTITY_TYPE_TANK | ENTITY_TYPE_WALL,
                     .collision_roundness = 8.0f,
                     .collision_size = { 8.0f, 8.0f },
                     .entity_flags = 0,
@@ -958,7 +1038,8 @@ static void advance_tank_state(Entity* e, Tank* t, U64 control_states) {
                     .destroy = destroy_bullet,
                 }
             );
-            t->bullet_timer = stats->bullet_cooldown;
+            t->state = TankState_Cooldown;
+            t->state_data.cooldown_timer = 10;
         }
     }
 }
@@ -999,12 +1080,24 @@ void update_bullet(Entity* e) {
 }
 
 void handle_collision_bullet(Entity* this, Entity* other) {
+    Bullet *b = arena_lookup_Bullet(&st.bullets, this->data_ref);
+
     if (other->entity_type & ENTITY_TYPE_WALL) {
         destroy_entity(entity_ref(this));
         //Vector2 eject = eject_collision(this, other);
         //Vector2 normal = normalize(eject);
         //Vector2 old_pos = this->position;
         //this->position = vector2_add(this->position, eject);
+    } else if (other->entity_type & ENTITY_TYPE_TANK) {
+        if (arena_key_equal(other->data_ref, b->owner))
+            return;
+
+        Tank* t = arena_lookup_Tank(&st.tanks, other->data_ref);
+        HitInfo info = {
+            .knockback = vector2_scale(b->direction, 20.0f),
+        };
+        hit_tank(other, t, info);
+        destroy_entity(entity_ref(this));
     }
 }
 
