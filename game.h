@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <string.h>
 #include <stdint.h>
 #include <math.h>
@@ -14,31 +15,130 @@
 
 #define AA_SIZE_INCREMENT 0.3
 
-void draw_circle_v_aa(Vector2 centre, F32 radius, Color colour) {
-    DrawCircleV(centre, radius+AA_SIZE_INCREMENT*2.0, Fade(colour, 0.2));
-    DrawCircleV(centre, radius+AA_SIZE_INCREMENT, Fade(colour, 0.5));
-    DrawCircleV(centre, radius, colour);
+U64 lockout = 0;
+
+#define NULL_REF ((ArenaKey) { .gen = 0, .idx = 0 })
+bool is_null_ref(ArenaKey k) {
+    return (k.idx == 0) & (k.gen == 0);
 }
 
-void draw_rectangle_rounded_aa(Rectangle r, F32 roundness, Color colour) {
-    r.x -= AA_SIZE_INCREMENT*2.0f;
-    r.y -= AA_SIZE_INCREMENT*2.0f;
-    r.width += AA_SIZE_INCREMENT*4.0f;
-    r.height += AA_SIZE_INCREMENT*4.0f;
-    DrawRectangleRounded(r, roundness, 16, Fade(colour, 0.2));
+// Animation ----------------------------------------------
 
-    r.x += AA_SIZE_INCREMENT;
-    r.y += AA_SIZE_INCREMENT;
-    r.width -= AA_SIZE_INCREMENT*2.0f;
-    r.height -= AA_SIZE_INCREMENT*2.0f;
-    DrawRectangleRounded(r, roundness, 16, Fade(colour, 0.5));
+typedef struct {
+    F32 r, g, b, a;
+} Colourf;
 
-    r.x += AA_SIZE_INCREMENT;
-    r.y += AA_SIZE_INCREMENT;
-    r.width -= AA_SIZE_INCREMENT*2.0f;
-    r.height -= AA_SIZE_INCREMENT*2.0f;
-    DrawRectangleRounded(r, roundness, 16, colour);
+Colourf to_colourf(Color c) {
+    return (Colourf) {
+        .r = ((F32) c.r) / 255.0f,
+        .g = ((F32) c.g) / 255.0f,
+        .b = ((F32) c.b) / 255.0f,
+        .a = ((F32) c.a) / 255.0f,
+    };
 }
+
+Color to_color(Colourf c) {
+    return (Color) {
+        .r = c.r * 255u,
+        .g = c.g * 255u,
+        .b = c.b * 255u,
+        .a = c.a * 255u,
+    };
+}
+
+typedef struct {
+    Colourf colour_mul;
+    Colourf colour_sum;
+    Vector2 scale;
+    Vector2 position;
+} AnimationFrame;
+
+_Static_assert(
+    sizeof(AnimationFrame) == sizeof(F32) * (4+4+2+2),
+    "AnimationFrame must not contain padding"
+);
+
+AnimationFrame default_animation_frame = {
+    .colour_mul = { 1.0, 1.0, 1.0, 1.0 },
+    .colour_sum = { 0.0, 0.0, 0.0, 0.0 },
+    .scale = { 1.0, 1.0 },
+    .position = { 0.0, 0.0 }
+};
+
+typedef U32 AnimDirective;
+#define ANIM_DIRECTIVE_COMMAND_START        0u
+#define ANIM_DIRECTIVE_COMMAND_BITS         3u
+#define ANIM_DIRECTIVE_COMMAND_MASK         (((1u << ANIM_DIRECTIVE_COMMAND_BITS) - 1) << ANIM_DIRECTIVE_COMMAND_START)
+#define ANIM_DIRECTIVE_COMMAND_END          0u
+#define ANIM_DIRECTIVE_COMMAND_WAIT_UNTIL   1u
+#define ANIM_DIRECTIVE_COMMAND_WAIT_FOR     2u
+#define ANIM_DIRECTIVE_COMMAND_SET          3u
+#define ANIM_DIRECTIVE_COMMAND_LINEAR_INCREMENT 4u
+
+// offset in AnimationFrame and number of floats to modify
+#define ANIM_DIRECTIVE_OFFSET_START         (ANIM_DIRECTIVE_COMMAND_START+ANIM_DIRECTIVE_COMMAND_BITS)
+#define ANIM_DIRECTIVE_OFFSET_BITS          8u
+#define ANIM_DIRECTIVE_OFFSET_MASK          (((1u << ANIM_DIRECTIVE_OFFSET_BITS) - 1) << ANIM_DIRECTIVE_OFFSET_START)
+
+#define ANIM_DIRECTIVE_LEN_START            (ANIM_DIRECTIVE_OFFSET_START+ANIM_DIRECTIVE_OFFSET_BITS)
+#define ANIM_DIRECTIVE_LEN_BITS             8u
+#define ANIM_DIRECTIVE_LEN_MASK             (((1u << ANIM_DIRECTIVE_LEN_BITS) - 1) << ANIM_DIRECTIVE_LEN_START)
+
+typedef union {
+    AnimDirective directive;
+    F32 f;
+} AnimData;
+
+typedef struct {
+    AnimData* data; 
+} Animation;
+
+AnimationFrame animation_frame_from_scratch(Animation * anim, F32 frame);
+
+#define ANIM_DIRECTIVE(cmd, offset, len) \
+    { .directive = cmd | (offset << ANIM_DIRECTIVE_OFFSET_START) | (len << ANIM_DIRECTIVE_LEN_START) }
+
+#define ANIM_WAIT_UNTIL(frame) \
+    ANIM_DIRECTIVE(ANIM_DIRECTIVE_COMMAND_WAIT_UNTIL, 0, 1), \
+    { .f = frame }
+
+#define ANIM_WAIT_FOR(frame) \
+    ANIM_DIRECTIVE(ANIM_DIRECTIVE_COMMAND_WAIT_FOR, 0, 1), \
+    { .f = frame }
+
+#define ANIM_COLOUR_MUL_SET(r, g, b, a) \
+    ANIM_DIRECTIVE(ANIM_DIRECTIVE_COMMAND_SET, offsetof(AnimationFrame, colour_mul)/4, 4), \
+    { .f = r }, { .f = g }, { .f = b }, { .f = a }
+
+#define ANIM_COLOUR_MUL_INCR(r, g, b, a) \
+    ANIM_DIRECTIVE(ANIM_DIRECTIVE_COMMAND_LINEAR_INCREMENT, offsetof(AnimationFrame, colour_mul)/4, 4), \
+    { .f = r }, { .f = g }, { .f = b }, { .f = a }
+
+#define ANIM_SCALE_SET(x, y) \
+    ANIM_DIRECTIVE(ANIM_DIRECTIVE_COMMAND_SET, offsetof(AnimationFrame, scale)/4, 2), \
+    { .f = x }, { .f = y }
+
+#define ANIM_SCALE_INCR(x, y) \
+    ANIM_DIRECTIVE(ANIM_DIRECTIVE_COMMAND_LINEAR_INCREMENT, offsetof(AnimationFrame, scale)/4, 2), \
+    { .f = x }, { .f = y }
+
+#define ANIM_POSITION_SET(x, y) \
+    ANIM_DIRECTIVE(ANIM_DIRECTIVE_COMMAND_SET, offsetof(AnimationFrame, position)/4, 2), \
+    { .f = x }, { .f = y }
+
+#define ANIM_POSITION_INCR(x, y) \
+    ANIM_DIRECTIVE(ANIM_DIRECTIVE_COMMAND_LINEAR_INCREMENT, offsetof(AnimationFrame, position)/4, 2), \
+    { .f = x }, { .f = y }
+
+#define COOLDOWN_COLOUR 0.75f
+#define DELTA ((1.0f - COOLDOWN_COLOUR) / 25.0f)
+
+// GFX --------------------------------------------------------------------------
+
+// anim may be null
+void draw_ellipse(AnimationFrame* anim, Vector2 centre, Vector2 radius, Color colour);
+void draw_circle(AnimationFrame* anim, Vector2 centre, F32 radius, Color colour);
+void draw_rounded_rectangle(AnimationFrame* anim, Vector2 centre, Vector2 size, F32 roundness, Color colour);
 
 // GENERAL -------------------------------------------------------------
 
@@ -75,6 +175,7 @@ typedef struct {
 #define ENTITY_TYPE_BULLET (1u << 2)
 #define ENTITY_TYPE_TANK (1u << 3)
 #define ENTITY_TYPE_HUD (1u << 4)
+#define ENTITY_TYPE_EFFECT (1u << 5)
 typedef U16 EntityTypeMask;
 
 // MENUS ----------------------------------------------------------------
@@ -257,6 +358,19 @@ typedef enum {
     TankState_Knockback,
 } TankState;
 
+bool actionable_state(TankState s) {
+    switch (s) {
+        case TankState_Normal: return true;
+        case TankState_Cooldown: return true;
+        case TankState_Hitstop: return false;
+        case TankState_Knockback: return false;
+        default: {
+            fprintf(stderr, "fn actionable_state: unhandled tank state\n");
+            return false;
+        }
+    }
+}
+
 typedef union {
     U32 cooldown_timer;
     struct {
@@ -280,47 +394,45 @@ typedef struct {
     F32 knockback_decay_factor;
     F32 knockback_decay_constant;
     I32 bullet_cooldown;
-    I32 max_health;
+    F32 max_health;
 } TankStats;
 
 typedef struct Tank {
     EntityRef e;
-    const TankStats* stats; // never null
+    TankStats* stats; // never null
     PlayerControls* controls; // might be null
     Color body_colour;
     F32 velocity;
     F32 angle; // degrees
     F32 angle_velocity;
-    I32 health;
+    F32 health;
 
     Vector2 knockback_velocity;
     TankState state;
     TankStateData state_data;
-} Tank;
 
-static const TankStats default_tank = {
-    .max_speed = 8.0f,
-    .acceleration = 0.5f,
-    .angle_max_speed = 2.0f,
-    .angle_max_speed_fast = 9.0f,
-    .angle_acceleration = 1.0f,
-    .size = 20.0f,
-    .velocity_decay = 1.8f,
-    .angle_velocity_decay = 1.8f,
-    .knockback_decay_factor = 1.08f,
-    .knockback_decay_constant = 0.2f,
-    .bullet_cooldown = 10,
-    .max_health = 100,
-};
+    Animation* anim; // might be null
+    F32 anim_frame;
+} Tank;
 
 #define ARENA_TYPE Tank
 #include <arena.h>
 typedef ArenaKey TankRef;
 
-TankRef insert_tank(Tank tank, Entity e);
+typedef struct {
+    Vector2 position;
+    TankStats* stats; // never null
+    PlayerControls* controls; // might be null
+    Color body_colour;
+    F32 angle; // degrees
+    void (*update)(struct Entity* this);
+} TankInit;
+
+TankRef insert_tank(TankInit init);
 void destroy_tank(Entity* t);
 TankRef tank_ref(Tank* t);
 
+void set_tank_state(Tank* t, TankState state, Animation* anim);
 void update_tank_player(Entity* e);
 void update_tank_training_dummy(Entity* e);
 void handle_collision_tank(Entity* this, Entity* other);
@@ -328,6 +440,8 @@ void draw_tank(Entity* e);
 
 typedef struct {
     Vector2 knockback;
+    Vector2 hit_position;
+    F32 damage;
 } HitInfo;
 
 void hit_tank(Entity* e, Tank* t, HitInfo info);
@@ -349,6 +463,7 @@ typedef struct {
     TankRef owner;
     Vector2 direction;
     F32 speed;
+    F32 damage;
     //int subaction_index;
 } Bullet;
 
@@ -356,22 +471,97 @@ typedef struct {
 #include <arena.h>
 typedef ArenaKey BulletRef;
 
-typedef struct {
-    EntityRef e;
-    BulletRef b;
-} BulletInsertReturn;
-
-BulletInsertReturn insert_bullet(Bullet tank, Entity e);
+EntityRef insert_bullet(Bullet tank, Entity e);
 void destroy_bullet(Entity* b);
 
 void update_bullet(Entity* e);
 void handle_collision_bullet(Entity* this, Entity* other);
 void draw_bullet(Entity* e);
 
+void insert_borders();
+void draw_wall(Entity* e);
+
+// Effects -------------------------------------------------
+
+typedef struct {
+    U32 particle_count;
+    F32 angle_variance;
+    F32 initial_speed;
+    F32 speed_variance;
+    F32 acceleration;
+    F32 size;
+    F32 size_variance;
+    F32 roundness;
+
+    F32 particle_lifetime;
+    F32 particle_lifetime_variance;
+    F32 total_lifetime;
+    F32 initial_spawn_rate;
+
+    Color colour;
+} EffectStats;
+
+typedef struct {
+    U16 progress;
+    U8 flags;
+    I8 angle_delta;
+    I8 speed_delta;
+    I8 angle_speed_delta;
+    I8 size_delta;
+    I8 lifetime_delta;
+} EffectParticle;
+
+typedef struct {
+    EntityRef e;
+    F32 lifetime;
+    F32 angle;
+    EntityRef follow; // may be a null ref
+    EffectStats* stats;
+    EffectParticle* spawned;
+} Effect;
+
+#define ARENA_TYPE Effect
+#include <arena.h>
+typedef ArenaKey EffectRef;
+
+#define PARTICLE_FLAGS_ALIVE 1
+
+EffectParticle random_effect_particle() {
+    return (EffectParticle) {
+        .progress = 0u,
+        .flags = PARTICLE_FLAGS_ALIVE,
+        .angle_delta = (I8)GetRandomValue(-128, 127),
+        .speed_delta = (I8)GetRandomValue(-128, 127),
+        .angle_speed_delta = (I8)GetRandomValue(-128, 127),
+        .size_delta = (I8)GetRandomValue(-128, 127),
+        .lifetime_delta = (I8)GetRandomValue(-128, 127),
+    };
+}
+
+void draw_effect(Entity* e);
+void update_effect(Entity* e);
+
+typedef struct {
+    Vector2 position;
+    U32 layer;
+    F32 angle;
+    EntityRef follow; // may be a null ref
+    EffectStats* stats;
+} EffectInit;
+
+EffectRef insert_effect(EffectInit init);
+void destroy_effect(Entity* t);
+EffectRef effect_ref(Effect* t);
+
+// State ------------------------------------------------
+
 typedef struct {
     Arena_Entity entities;
     Arena_Tank tanks;
     Arena_Bullet bullets;
+    Arena_Effect effects;
+
+    bool finish;
 } GameState;
 
 GameState init_game_state(void) {
@@ -379,6 +569,9 @@ GameState init_game_state(void) {
         .entities = arena_create_Entity(),
         .tanks = arena_create_Tank(),
         .bullets = arena_create_Bullet(),
+        .effects = arena_create_Effect(),
+
+        .finish = false,
     };
 }
 
@@ -398,18 +591,26 @@ void copy_game_state(GameState* old, GameState* new) {
     memcpy(new->bullets.tracking.generations, old->bullets.tracking.generations, ARENA_MAX_ELEMENTS * sizeof(ArenaGen));
     memcpy(new->bullets.backing, old->bullets.backing, ARENA_MAX_ELEMENTS * sizeof(Bullet));
     new->bullets.tracking.element_num = old->bullets.tracking.element_num;
+
+    memcpy(new->effects.tracking.free, old->effects.tracking.free, ARENA_MAX_ELEMENTS / 8);
+    memcpy(new->effects.tracking.generations, old->effects.tracking.generations, ARENA_MAX_ELEMENTS * sizeof(ArenaGen));
+    memcpy(new->effects.backing, old->effects.backing, ARENA_MAX_ELEMENTS * sizeof(Effect));
+    new->effects.tracking.element_num = old->effects.tracking.element_num;
 }
 
 void reset_game_state(GameState* st) {
     arena_tracking_reset(&st->entities.tracking);
     arena_tracking_reset(&st->tanks.tracking);
     arena_tracking_reset(&st->bullets.tracking);
+    arena_tracking_reset(&st->effects.tracking);
+    st->finish = false;
 }
 
 void dealloc_game_state(GameState* st) {
     arena_dealloc_Entity(&st->entities);
     arena_dealloc_Tank(&st->tanks);
     arena_dealloc_Bullet(&st->bullets);
+    arena_dealloc_Effect(&st->effects);
 }
 
 Entity* lookup_entity(GameState* st, EntityRef e) {
@@ -431,6 +632,12 @@ GameState st;
 EntityRef insert_player_hud(TankRef player, Vector2 hud_pos, Vector2 hud_size);
 void draw_player_hud(Entity* e);
 //void draw_general_hud();
+
+typedef struct {
+} TrainingMenuState;
+
+void draw_training_menu(TrainingMenuState* tm_state);
+
 
 // MATH -------------------------------------------------------------
 
@@ -461,6 +668,15 @@ Vector2 vector2_dir(F32 angle, F32 length) {
         .x = cosf(angle_rad) * length,
         .y = sinf(angle_rad) * length,
     };
+}
+
+F32 vector2_angle(Vector2 a) {
+    F32 res = atan2(a.y, a.x);   
+    if (res < 0.0f)
+        res += 2.0*PI;
+
+    // convert to degrees
+    return res * 57.29577950f;
 }
 
 F32 vector2_dot(Vector2 a, Vector2 b) {

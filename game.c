@@ -1,11 +1,60 @@
 #include "game.h"
 
+// set by hot reload
+Animation test_animation;
+Animation shoot_animation;
+TankStats default_tank;
+EffectStats bullet_hit_wall_effect_stats;
+EffectStats hit_tank_effect_stats;
+
+#include <dlfcn.h>
+#include <sys/stat.h>
+void* hot_reload_lib = NULL;
+U64 hot_reload_changed_time = 0;
+
+static void check_hot_reload() {
+    struct stat lib_stat;
+    stat("./libhot_reload.so", &lib_stat);
+
+    if (hot_reload_lib == NULL)
+        goto reload;
+    
+    if (lib_stat.st_mtime > hot_reload_changed_time) {
+        dlclose(hot_reload_lib);
+        goto reload;
+    }
+
+    return;
+
+reload:
+    printf("hot reloading\n");
+
+    hot_reload_changed_time = lib_stat.st_mtime;
+    hot_reload_lib = dlopen("./libhot_reload.so", RTLD_LAZY);
+
+    if (hot_reload_lib == NULL) {
+        fprintf(stderr, "could not open hot reload library\n");
+        exit(1);
+    }
+
+    test_animation = *(Animation*) dlsym(hot_reload_lib, "test_animation");
+    shoot_animation = *(Animation*) dlsym(hot_reload_lib, "shoot_animation");
+    default_tank = *(TankStats*) dlsym(hot_reload_lib, "default_tank");
+    bullet_hit_wall_effect_stats = *(EffectStats*) dlsym(hot_reload_lib, "bullet_hit_wall_effect_stats");
+    hit_tank_effect_stats = *(EffectStats*) dlsym(hot_reload_lib, "hit_tank_effect_stats");
+
+    printf("tank size: %f\n", default_tank.size);
+
+}
+
 int main(void) {
+    check_hot_reload();
+
     InitWindow(SCREEN_WIDTH, SCREEN_HEIGHT, "Game");
     SetTargetFPS(60);
 
-    //SceneTransition transition = { .next_scene_type = SceneType_MainMenu };
-    SceneTransition transition = { .next_scene_type = SceneType_Training };
+    SceneTransition transition = { .next_scene_type = SceneType_MainMenu };
+    //SceneTransition transition = { .next_scene_type = SceneType_Training };
 
     st = init_game_state();
 
@@ -59,6 +108,7 @@ int main(void) {
             }
             case SceneType_MultiPlayer: {
                 printf("scene transition to Multiplayer\n");
+                lockout = 20;
                 transition = run_multiplayer();
                 break;
             }
@@ -232,22 +282,24 @@ SceneTransition run_menu(const MenuItem* menu, U32 menu_len) {
             };
         }
 
-        if (IsKeyPressed(KEY_DOWN) 
-                || IsKeyPressed(KEY_S)
-                || player_input_pressed(&player1_controls, PlayerInput_Backward)
-                || player_input_pressed(&player2_controls, PlayerInput_Backward)
-        ) {
-            menu_idx += 1;
-            if (menu_idx == menu_len) menu_idx = 0;
-        }
+        if (lockout == 0) {
+            if (IsKeyPressed(KEY_DOWN) 
+                    || IsKeyPressed(KEY_S)
+                    || player_input_pressed(&player1_controls, PlayerInput_Backward)
+                    || player_input_pressed(&player2_controls, PlayerInput_Backward)
+            ) {
+                menu_idx += 1;
+                if (menu_idx == menu_len) menu_idx = 0;
+            }
 
-        if (IsKeyPressed(KEY_UP) 
-                || IsKeyPressed(KEY_W)
-                || player_input_pressed(&player1_controls, PlayerInput_Forward)
-                || player_input_pressed(&player2_controls, PlayerInput_Forward)
-        ) {
-            if (menu_idx == 0) menu_idx = menu_len;
-            menu_idx -= 1;
+            if (IsKeyPressed(KEY_UP) 
+                    || IsKeyPressed(KEY_W)
+                    || player_input_pressed(&player1_controls, PlayerInput_Forward)
+                    || player_input_pressed(&player2_controls, PlayerInput_Forward)
+            ) {
+                if (menu_idx == 0) menu_idx = menu_len;
+                menu_idx -= 1;
+            }
         }
 
         // draw ----------------------------------------------------
@@ -288,46 +340,139 @@ SceneTransition run_menu(const MenuItem* menu, U32 menu_len) {
 
         EndDrawing();
 
-        if (IsKeyPressed(KEY_ENTER)
-                || player_input_pressed(&player1_controls, PlayerInput_Attack1)
-                || player_input_pressed(&player2_controls, PlayerInput_Attack1)
-        ) {
-            return menu[menu_idx].action;
-        }
+        if (lockout == 0) {
+            if (IsKeyPressed(KEY_ENTER)
+                    || player_input_pressed(&player1_controls, PlayerInput_Attack1)
+                    || player_input_pressed(&player2_controls, PlayerInput_Attack1)
+            ) {
+                return menu[menu_idx].action;
+            }
 
-        if (IsKeyPressed(KEY_BACKSPACE)
-                || player_input_pressed(&player1_controls, PlayerInput_Attack2)
-                || player_input_pressed(&player2_controls, PlayerInput_Attack2)
-        ) {
-            for (U64 i = 0; i < menu_len; ++i) {
-                if (strcmp(menu[i].text, "Back") == 0) {
-                    return menu[i].action;
+            if (IsKeyPressed(KEY_BACKSPACE)
+                    || player_input_pressed(&player1_controls, PlayerInput_Attack2)
+                    || player_input_pressed(&player2_controls, PlayerInput_Attack2)
+            ) {
+                for (U64 i = 0; i < menu_len; ++i) {
+                    if (strcmp(menu[i].text, "Back") == 0) {
+                        return menu[i].action;
+                    }
                 }
             }
         }
+
+        if (lockout > 0)
+            lockout--;
     }
 }
 
 SceneTransition run_multiplayer() {
-    reset_game_state(&st);
+    int games[3] = { 0, 0, 0};
+    int g_idx = 0;
 
-    return (SceneTransition) {
+start:
+    reset_game_state(&st);
+    insert_borders();
+
+    TankRef p1 = insert_tank((TankInit) {
+        .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
+        .stats = &default_tank,
+        .body_colour = { 190, 33, 55, 255 },
+        .controls = &player1_controls,
+        .angle = -90.0f,
+        .update = update_tank_player,
+    });
+    insert_player_hud(p1, (Vector2) { 0.0f, 0.0f }, (Vector2) { SCREEN_WIDTH * 0.5f, 20.0f });
+
+    TankRef p2 = insert_tank((TankInit) {
+        .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 1 * SCREEN_HEIGHT / 4 },
+        .stats = &default_tank,
+        .body_colour = {  33, 190, 55, 255 },
+        .controls = &player2_controls,
+        .angle = 90.0f,
+        .update = update_tank_player,
+    });
+    insert_player_hud(p2, (Vector2) { SCREEN_WIDTH * 0.5f, 0.0f }, (Vector2) { SCREEN_WIDTH * 0.5f, 20.0f });
+
+    Entity border = {
+        .entity_type = ENTITY_TYPE_WALL,
+        .entity_flags = 0,
+        .collision_roundness = 10.0f,
+        .on_collide = NULL,
+        .draw = draw_wall,
+        .update = NULL,
+        .destroy = NULL,
+        .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = SCREEN_HEIGHT / 2 },
+        .collision_size = (Vector2) { .x = 100, .y = 50 },
+    };
+    insert_entity(border);
+
+    SceneTransition transistion = {
         .next_scene_type = SceneType_MainMenu
     };
+
+    while (true) {
+        run_entity_updates();
+        run_collision_checks();
+
+        BeginDrawing();
+        ClearBackground((Color) { 200, 200, 200, 255 });
+        draw_entities();
+
+        Tank* p1_t = arena_lookup_Tank(&st.tanks, p1);
+        Tank* p2_t = arena_lookup_Tank(&st.tanks, p2);
+
+        Vector2 p = { 50.0f, 50.0f };
+        for (U64 i = 0; i < 3; ++i) {
+            Color c = {255, 255, 255, 255};
+            if (games[i] == 1)
+                c = p1_t->body_colour;
+            else if (games[i] == 2)
+                c = p2_t->body_colour;
+            draw_circle(NULL, p, 20.0f, c);
+            p = vector2_add(p, (Vector2) { 50.0f, 0.0f });
+        }
+
+        EndDrawing();
+
+        if (WindowShouldClose()) {
+            transistion = (SceneTransition) {
+                .next_scene_type = SceneType_Exit
+            };
+            break;
+        }
+
+        if (st.finish) {
+            bool p1_l = p1_t->health <= 0.0f;
+            bool p2_l = p2_t->health <= 0.0f;
+
+            if (!p1_l && p2_l) {
+                games[g_idx] = 1;
+                g_idx++;
+            } if (p1_l && !p2_l) {
+                games[g_idx] = 2;
+                g_idx++;
+            }
+
+            if (g_idx == 3)
+                break;
+            else
+                goto start;
+        }
+
+        if (lockout > 0)
+            lockout--;
+    }
+
+    lockout = 30;
+
+    return transistion;
 }
 
 void draw_wall(Entity* e) {
     Vector2 pos = e->position;
     Vector2 size = e->collision_size;
     F32 r = e->collision_roundness;
-
-    Rectangle rect = {
-        .x = pos.x - size.x,
-        .y = pos.y - size.y,
-        .width = size.x*2.0f,
-        .height = size.y*2.0f,
-    };
-    draw_rectangle_rounded_aa(rect, r / fmin(size.x, size.y), GRAY);
+    draw_rounded_rectangle(NULL, pos, size, r / fmin(size.x, size.y), GRAY);
 }
 
 void insert_borders() {
@@ -385,31 +530,14 @@ SceneTransition run_singleplayer() {
 
     insert_borders();
 
-    TankRef player = insert_tank(
-        (Tank) {
-            .stats = &default_tank,
-            .body_colour = { 190, 33, 55, 255 },
-            .controls = &player1_controls,
-            .velocity = 0,
-            .angle = -90.0f,
-            .angle_velocity = 0.0f,
-            .health = 100,
-            .knockback_velocity = { .x = 0.0f, .y = 0.0f },
-            .state = TankState_Normal,
-        },
-        (Entity) {
-            .entity_type = ENTITY_TYPE_TANK,
-            .collision_mask = ENTITY_TYPE_TANK | ENTITY_TYPE_WALL | ENTITY_TYPE_BULLET,
-            .collision_roundness = default_tank.size,
-            .collision_size = { default_tank.size, default_tank.size },
-            .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
-            .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
-            .on_collide = handle_collision_tank,
-            .draw = draw_tank,
-            .update = update_tank_player,
-            .destroy = destroy_tank,
-        }
-    );
+    TankRef player = insert_tank((TankInit) {
+        .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
+        .stats = &default_tank,
+        .body_colour = { 190, 33, 55, 255 },
+        .controls = &player1_controls,
+        .angle = -90.0f,
+        .update = update_tank_player,
+    });
     insert_player_hud(player, (Vector2) { 0.0f, 0.0f }, (Vector2) { SCREEN_WIDTH * 0.5f, 20.0f });
 
     SceneTransition transistion = {
@@ -437,70 +565,48 @@ SceneTransition run_singleplayer() {
     return transistion;
 }
 
-static void reset_training() {
+typedef struct {
+    TankRef player;
+    TankRef dummy;
+} ResetTrainingRet;
+
+static ResetTrainingRet reset_training() {
     reset_game_state(&st);
 
     insert_borders();
 
-    // player
-    TankRef player = insert_tank(
-        (Tank) {
-            .stats = &default_tank,
-            .body_colour = { 190, 33, 55, 255 },
-            .controls = &player1_controls,
-            .velocity = 0,
-            .angle = -90.0f,
-            .angle_velocity = 0.0f,
-            .health = 100,
-            .knockback_velocity = { .x = 0.0f, .y = 0.0f },
-            .state = TankState_Normal,
-        },
-        (Entity) {
-            .entity_type = ENTITY_TYPE_TANK,
-            .collision_mask = ENTITY_TYPE_TANK | ENTITY_TYPE_WALL | ENTITY_TYPE_BULLET,
-            .collision_roundness = default_tank.size,
-            .collision_size = { default_tank.size, default_tank.size },
-            .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
-            .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
-            .on_collide = handle_collision_tank,
-            .draw = draw_tank,
-            .update = update_tank_player,
-            .destroy = destroy_tank,
-        }
-    );
+    TankRef player = insert_tank((TankInit) {
+        .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 3 * SCREEN_HEIGHT / 4 },
+        .stats = &default_tank,
+        .body_colour = { 190, 33, 55, 255 },
+        .controls = &player1_controls,
+        .angle = -90.0f,
+        .update = update_tank_player,
+    });
     insert_player_hud(player, (Vector2) { 0.0f, 0.0f }, (Vector2) { SCREEN_WIDTH * 0.5f, 20.0f });
 
-    // training dummy
-    TankRef dummy = insert_tank(
-        (Tank) {
-            .stats = &default_tank,
-            .body_colour = { 100, 100, 100, 255 },
-            .controls = NULL,
-            .velocity = 0,
-            .angle = 90.0f,
-            .angle_velocity = 0.0f,
-            .health = 100,
-            .knockback_velocity = { .x = 0.0f, .y = 0.0f },
-            .state = TankState_Normal,
-        },
-        (Entity) {
-            .entity_type = ENTITY_TYPE_TANK,
-            .collision_mask = ENTITY_TYPE_TANK | ENTITY_TYPE_WALL | ENTITY_TYPE_BULLET,
-            .collision_roundness = default_tank.size,
-            .collision_size = { default_tank.size, default_tank.size },
-            .entity_flags = ENTITY_FLAGS_RENDER_LAYER_1,
-            .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 1 * SCREEN_HEIGHT / 4 },
-            .on_collide = handle_collision_tank,
-            .draw = draw_tank,
-            .update = update_tank_training_dummy,
-            .destroy = destroy_tank,
-        }
-    );
+    TankRef dummy = insert_tank((TankInit) {
+        .position = (Vector2) { .x = SCREEN_WIDTH / 2, .y = 1 * SCREEN_HEIGHT / 4 },
+        .stats = &default_tank,
+        .body_colour = { 100, 100, 100, 255 },
+        .controls = NULL,
+        .angle = 90.0f,
+        .update = update_tank_training_dummy,
+    });
     insert_player_hud(dummy, (Vector2) { SCREEN_WIDTH * 0.5f, 0.0f }, (Vector2) { SCREEN_WIDTH * 0.5f, 20.0f });
+
+    return (ResetTrainingRet) {
+        .player = player,
+        .dummy = dummy,
+    };
 }
 
 SceneTransition run_training() {
-    reset_training();
+    ResetTrainingRet ret = reset_training();
+    TankRef player = ret.player;
+    TankRef dummy = ret.dummy;
+    (void)(player);
+    (void)(dummy);
 
     SceneTransition transistion = {
         .next_scene_type = SceneType_MainMenu
@@ -508,22 +614,25 @@ SceneTransition run_training() {
 
     bool playing = true;
     bool frame_advance = false;
-
     U32 frame_advance_down_timer = 0;
-
     bool has_saved_state = false;
+    bool menu_showing = false;
+
     GameState saved_state = init_game_state();
+    TrainingMenuState tm_state = {
+    };
 
     while (true) {
         // training input ----------------------------------------------------
 
         if (training_input_pressed(&training_controls, TrainingInput_Reset)) {
-            reset_training();
+            ret = reset_training();
+            player = ret.player;
+            dummy = ret.dummy;
         }
 
-        if (training_input_pressed(&training_controls, TrainingInput_TogglePlaying)) {
+        if (training_input_pressed(&training_controls, TrainingInput_TogglePlaying))
             playing = !playing;
-        }
 
         if (training_input_down(&training_controls, TrainingInput_FrameAdvance)) {
             if (frame_advance_down_timer == 0) {
@@ -547,9 +656,11 @@ SceneTransition run_training() {
             copy_game_state(&st, &saved_state);
         }
 
-        if (training_input_down(&training_controls, TrainingInput_LoadState) && has_saved_state) {
+        if (training_input_down(&training_controls, TrainingInput_LoadState) && has_saved_state)
             copy_game_state(&saved_state, &st);
-        }
+
+        if (training_input_pressed(&training_controls, TrainingInput_ToggleMenu))
+            menu_showing = !menu_showing;
 
         // game loop ----------------------------------------------------
 
@@ -562,6 +673,9 @@ SceneTransition run_training() {
         BeginDrawing();
         ClearBackground(RAYWHITE);
         draw_entities();
+        
+        if (menu_showing)
+            draw_training_menu(&tm_state);
         EndDrawing();
 
         if (WindowShouldClose()) {
@@ -838,6 +952,8 @@ void draw_entities() {
 }
 
 void run_entity_updates() {
+    check_hot_reload();
+
     ArenaIter iter = arena_iter(&st.entities.tracking);
 
     while (true) {
@@ -895,7 +1011,8 @@ void draw_tank(Entity* e) {
             break;
         }
         case TankState_Cooldown: {
-            colour = BLACK;
+            colour = t->body_colour;
+            //colour = BLACK;
             break;
         }
         case TankState_Hitstop: {
@@ -912,16 +1029,46 @@ void draw_tank(Entity* e) {
             break;
         }
     }
+
+    AnimationFrame frame = default_animation_frame;
+    if (t->anim != NULL) {
+        frame = animation_frame_from_scratch(t->anim, t->anim_frame);
+    }
+
     F32 size = t->stats->size;
-    draw_circle_v_aa(pos, size, colour);
+    draw_circle(&frame, pos, size, colour);
     F32 head_size = size / 5;
     F32 head_offset = size - head_size;
     Vector2 head = vector2_add(pos, vector2_dir(t->angle, head_offset)); 
-    draw_circle_v_aa(head, head_size, WHITE);
+    draw_circle(&frame, head, head_size, WHITE);
 }
 
 // will fill in reference fields
-TankRef insert_tank(Tank t, Entity e) {
+TankRef insert_tank(TankInit init) {
+    Tank t = {
+        .stats = init.stats,
+        .body_colour = init.body_colour,
+        .controls = init.controls,
+        .velocity = 0,
+        .angle = init.angle,
+        .angle_velocity = 0.0f,
+        .health = init.stats->max_health,
+        .knockback_velocity = { .x = 0.0f, .y = 0.0f },
+        .state = TankState_Normal,
+    };
+    Entity e = {
+        .entity_type = ENTITY_TYPE_TANK,
+        .collision_mask = ENTITY_TYPE_TANK | ENTITY_TYPE_WALL | ENTITY_TYPE_BULLET,
+        .collision_roundness = init.stats->size,
+        .collision_size = { init.stats->size, init.stats->size },
+        .entity_flags = ENTITY_FLAGS_RENDER_LAYER_2,
+        .position = init.position,
+        .on_collide = handle_collision_tank,
+        .draw = draw_tank,
+        .update = init.update,
+        .destroy = destroy_tank,
+    };
+
     TankRef t_ref = arena_insert_Tank(&st.tanks, t);
     e.data_ref = t_ref;
     EntityRef e_ref = insert_entity(e);
@@ -936,9 +1083,12 @@ void destroy_tank(Entity* t) {
 
 void hit_tank(Entity* e, Tank* t, HitInfo info) {
     (void)(e);
-    t->state = TankState_Hitstop;
+    set_tank_state(t, TankState_Hitstop, NULL);
     t->velocity = 0.0f;
     e->position = vector2_add(e->position, vector2_scale(info.knockback, 0.5f));
+    t->health -= info.damage;
+    if (t->health < 0.0f)
+        t->health = 0.0f;
 
     F32 v = length(info.knockback);
     F32 d_f = t->stats->knockback_decay_factor;
@@ -954,10 +1104,18 @@ void hit_tank(Entity* e, Tank* t, HitInfo info) {
     t->state_data.hitstop.queued_knockback_timer = kb_frames;
     t->state_data.hitstop.queued_knockback = info.knockback;
     t->state_data.hitstop.timer = 5;
+
+    F32 angle = vector2_angle(info.knockback);
+    insert_effect((EffectInit) {
+        .layer = ENTITY_FLAGS_RENDER_LAYER_1,
+        .position = info.hit_position,
+        .angle = angle,
+        .stats = &hit_tank_effect_stats,
+    });
 }
 
 static void advance_tank_state(Entity* e, Tank* t, U64 control_states) {
-    const TankStats* stats = t->stats;
+    TankStats* stats = t->stats;
 
     bool actionable = false;
     bool moveable = false;
@@ -975,7 +1133,7 @@ switch_state:
                 t->state_data.cooldown_timer--;
                 break;
             } else {
-                t->state = TankState_Normal;
+                set_tank_state(t, TankState_Normal, NULL);
                 goto switch_state;
             }
         }
@@ -989,7 +1147,7 @@ switch_state:
                 t->knockback_velocity = t->state_data.hitstop.queued_knockback;
                 U32 knockback_timer = t->state_data.hitstop.queued_knockback_timer;
 
-                t->state = TankState_Knockback;
+                set_tank_state(t, TankState_Knockback, NULL);
                 t->state_data.knockback_timer = knockback_timer;
                 goto switch_state;
             }
@@ -999,7 +1157,7 @@ switch_state:
                 t->state_data.knockback_timer--;
                 break;
             } else {
-                t->state = TankState_Normal;
+                set_tank_state(t, TankState_Normal, NULL);
                 goto switch_state;
             }
             break;
@@ -1082,6 +1240,8 @@ switch_state:
     e->position.x = clamp(e->position.x, 0, SCREEN_WIDTH);
     e->position.y = clamp(e->position.y, 0, SCREEN_HEIGHT);
 
+    t->anim_frame += 1.0f;
+
     // bullets -------------------------------------------------------
 
     if (actionable) {
@@ -1090,7 +1250,7 @@ switch_state:
                 (Bullet) {
                     .owner = tank_ref(t),
                     .direction = vector2_dir(t->angle, 1.0),
-                    .speed = 10.0,
+                    .speed = 15.0,
                 },
                 (Entity) {
                     .entity_type = ENTITY_TYPE_BULLET,
@@ -1105,10 +1265,17 @@ switch_state:
                     .destroy = destroy_bullet,
                 }
             );
-            t->state = TankState_Cooldown;
-            t->state_data.cooldown_timer = 10;
+            set_tank_state(t, TankState_Cooldown, &shoot_animation);
+            t->state_data.cooldown_timer = t->stats->bullet_cooldown;
+        } else if (control_states & (1 << PlayerInput_Attack2)) {
         }
     }
+}
+
+void set_tank_state(Tank* t, TankState state, Animation* anim) {
+    t->state = state;
+    t->anim_frame = 0.0f;
+    t->anim = anim;
 }
 
 void update_tank_player(Entity* e) {
@@ -1118,7 +1285,7 @@ void update_tank_player(Entity* e) {
 
     Tank* player = arena_lookup_Tank(&st.tanks, e->data_ref);
     PlayerControls* controls = player->controls;
-    if (controls != NULL) {
+    if (controls != NULL && lockout == 0 && lockout == 0) {
         control_states |= player_input_down(controls, PlayerInput_Forward) << PlayerInput_Forward;
         control_states |= player_input_down(controls, PlayerInput_Backward) << PlayerInput_Backward;
         control_states |= player_input_down(controls, PlayerInput_TurnLeft) << PlayerInput_TurnLeft;
@@ -1131,11 +1298,19 @@ void update_tank_player(Entity* e) {
     }
 
     advance_tank_state(e, player, control_states);
+
+    if (player->health <= 0.0f) {
+        st.finish = true;
+    }
 }
 
 void update_tank_training_dummy(Entity* e) {
     Tank* t = arena_lookup_Tank(&st.tanks, e->data_ref);
     advance_tank_state(e, t, 0);
+
+    if (actionable_state(t->state)) {
+        t->health = t->stats->max_health;
+    }
 }
 
 
@@ -1150,11 +1325,17 @@ void handle_collision_bullet(Entity* this, Entity* other) {
     Bullet *b = arena_lookup_Bullet(&st.bullets, this->data_ref);
 
     if (other->entity_type & ENTITY_TYPE_WALL) {
+        Vector2 eject = eject_collision(this, other);
+        Vector2 pos = vector2_add(this->position, eject);
+        F32 angle = vector2_angle(eject);
+
+        insert_effect((EffectInit) {
+            .layer = ENTITY_FLAGS_RENDER_LAYER_1,
+            .position = pos,
+            .angle = angle,
+            .stats = &bullet_hit_wall_effect_stats,
+        });
         destroy_entity(entity_ref(this));
-        //Vector2 eject = eject_collision(this, other);
-        //Vector2 normal = normalize(eject);
-        //Vector2 old_pos = this->position;
-        //this->position = vector2_add(this->position, eject);
     } else if (other->entity_type & ENTITY_TYPE_TANK) {
         if (arena_key_equal(other->data_ref, b->owner))
             return;
@@ -1162,6 +1343,8 @@ void handle_collision_bullet(Entity* this, Entity* other) {
         Tank* t = arena_lookup_Tank(&st.tanks, other->data_ref);
         HitInfo info = {
             .knockback = vector2_scale(b->direction, 30.0f),
+            .hit_position = this->position,
+            .damage = 10.0,
         };
         hit_tank(other, t, info);
         destroy_entity(entity_ref(this));
@@ -1170,20 +1353,16 @@ void handle_collision_bullet(Entity* this, Entity* other) {
 
 void draw_bullet(Entity* e) {
     //Bullet* b = arena_lookup_Bullet(&bullets, e->data_ref);
-    draw_circle_v_aa(e->position, e->collision_roundness, RED);
+    draw_circle(NULL, e->position, e->collision_roundness, RED);
 }
 
 // will fill in entity field in tank
-BulletInsertReturn insert_bullet(Bullet t, Entity e) {
+BulletRef insert_bullet(Bullet t, Entity e) {
     BulletRef b_ref = arena_insert_Bullet(&st.bullets, t);
     e.data_ref = b_ref;
     EntityRef e_ref = insert_entity(e);
     arena_lookup_Bullet(&st.bullets, b_ref)->e = e_ref;
-
-    return (BulletInsertReturn) {
-        .e = e_ref,
-        .b = b_ref,
-    };
+    return b_ref;
 }
 
 void destroy_bullet(Entity* t) {
@@ -1229,4 +1408,254 @@ void draw_player_hud(Entity* e) {
 
     DrawRectangleRec(r, colour);
 }
+
+void draw_training_menu(TrainingMenuState* tm_state) {
+    DrawRectangle(0, 0, 200, 200, BLACK);
+}
+
+AnimationFrame animation_frame_from_scratch(Animation* anim, F32 frame) {
+    AnimationFrame f = default_animation_frame;
+    U32 idx = 0;
+    F32 last_waited_frame = 0.0f;
+    while (1) {
+        AnimDirective dir = anim->data[idx].directive;
+        AnimDirective command = dir & ANIM_DIRECTIVE_COMMAND_MASK;
+        U64 offset = (dir & ANIM_DIRECTIVE_OFFSET_MASK) >> ANIM_DIRECTIVE_OFFSET_START;
+        U64 len = (dir & ANIM_DIRECTIVE_LEN_MASK) >> ANIM_DIRECTIVE_LEN_START;
+
+        switch (command) {
+            case ANIM_DIRECTIVE_COMMAND_END: return f;
+            case ANIM_DIRECTIVE_COMMAND_WAIT_UNTIL: {
+                last_waited_frame = anim->data[idx+1].f;
+                if (frame < last_waited_frame)
+                    return f;
+                idx += 2;
+                break;
+            }
+            case ANIM_DIRECTIVE_COMMAND_WAIT_FOR: {
+                last_waited_frame += anim->data[idx+1].f;
+                if (frame < last_waited_frame)
+                    return f;
+                idx += 2;
+                break;
+            }
+            case ANIM_DIRECTIVE_COMMAND_SET: {
+                F32* frame_f32 = (F32*) &f;
+                for (U64 i = 0; i < len; ++i) {
+                    frame_f32[offset+i] = anim->data[idx+1+i].f;
+                }
+                idx += len+1;
+                break;
+            }
+            case ANIM_DIRECTIVE_COMMAND_LINEAR_INCREMENT: {
+                F32* frame_f32 = (F32*) &f;
+                F32 frame_diff = frame - last_waited_frame;
+                for (U64 i = 0; i < len; ++i) {
+                    frame_f32[offset+i] += anim->data[idx+1+i].f * frame_diff;
+                }
+                idx += len+1;
+                break;
+            }
+            default: {
+                fprintf(stderr, "fn animation_frame_from_scratch: unhandled case\n");
+                return f;
+            }
+        }
+    }
+}
+
+void draw_ellipse(AnimationFrame* anim, Vector2 centre, Vector2 radius, Color colour) {
+    if (anim != NULL) {
+        centre = vector2_add(centre, anim->position);
+        radius = vector2_mul(radius, anim->scale);
+        colour.r = colour.r*anim->colour_mul.r + anim->colour_sum.r;
+        colour.g = colour.g*anim->colour_mul.g + anim->colour_sum.g;
+        colour.b = colour.b*anim->colour_mul.b + anim->colour_sum.b;
+        colour.a = colour.a*anim->colour_mul.a + anim->colour_sum.a;
+    }
+
+    DrawEllipse(centre.x, centre.y, radius.x+AA_SIZE_INCREMENT*2.0, radius.y+AA_SIZE_INCREMENT*2.0, Fade(colour, 0.2));
+    DrawEllipse(centre.x, centre.y, radius.x+AA_SIZE_INCREMENT    , radius.y+AA_SIZE_INCREMENT    , Fade(colour, 0.5));
+    DrawEllipse(centre.x, centre.y, radius.x                      , radius.y                      , colour);
+}
+
+void draw_circle(AnimationFrame* anim, Vector2 centre, F32 radius, Color colour) {
+    draw_ellipse(anim, centre, (Vector2) { radius, radius }, colour);
+}
+
+
+// anim may be null
+void draw_rounded_rectangle(AnimationFrame* anim, Vector2 centre, Vector2 size, F32 roundness, Color colour) {
+    Colourf colour_f = to_colourf(colour);
+    if (anim != NULL) {
+        centre = vector2_add(centre, anim->position);
+        size = vector2_mul(size, anim->scale);
+        roundness *= fmin(anim->scale.x, anim->scale.y);
+        colour_f.r = colour_f.r*anim->colour_mul.r + anim->colour_sum.r;
+        colour_f.g = colour_f.g*anim->colour_mul.g + anim->colour_sum.g;
+        colour_f.b = colour_f.b*anim->colour_mul.b + anim->colour_sum.b;
+        colour_f.a = colour_f.a*anim->colour_mul.a + anim->colour_sum.a;
+    }
+
+    if (size.x < roundness)
+        roundness = size.x;
+    if (size.y < roundness)
+        roundness = size.y;
+
+    colour = to_color(colour_f);
+
+    Rectangle r = {
+        .x = centre.x - size.x,
+        .y = centre.y - size.y,
+        .width = 2*size.x,
+        .height = 2*size.y,
+    };
+
+    r.x -= AA_SIZE_INCREMENT*2.0f;
+    r.y -= AA_SIZE_INCREMENT*2.0f;
+    r.width += AA_SIZE_INCREMENT*4.0f;
+    r.height += AA_SIZE_INCREMENT*4.0f;
+    DrawRectangleRounded(r, roundness, 16, Fade(colour, 0.2));
+
+    r.x += AA_SIZE_INCREMENT;
+    r.y += AA_SIZE_INCREMENT;
+    r.width -= AA_SIZE_INCREMENT*2.0f;
+    r.height -= AA_SIZE_INCREMENT*2.0f;
+    DrawRectangleRounded(r, roundness, 16, Fade(colour, 0.5));
+
+    r.x += AA_SIZE_INCREMENT;
+    r.y += AA_SIZE_INCREMENT;
+    r.width -= AA_SIZE_INCREMENT*2.0f;
+    r.height -= AA_SIZE_INCREMENT*2.0f;
+    DrawRectangleRounded(r, roundness, 16, colour);
+}
+
+static F32 compute_range(F32 start, F32 range, I8 variance) {
+    return start + range * (F32)variance * 0.0078125f; // variance / 128.0f
+}
+
+void update_effect(Entity* e) {
+    Effect* ef = arena_lookup_Effect(&st.effects, e->data_ref);
+
+    if (!is_null_ref(ef->follow)) {
+        Entity* parent = lookup_entity(&st, ef->follow);
+        
+        if (parent == NULL) {
+            destroy_entity(entity_ref(e));
+            return;
+        }
+
+        e->position = parent->position;
+    }
+
+    EffectStats* stats = ef->stats;
+    F32 lifetime = ef->lifetime;
+    U64 particle_count = stats->particle_count;
+    F32 initial_spawn_rate = stats->initial_spawn_rate;
+
+    F32 new_lifetime = lifetime + 1.0;
+    U64 spawned = (U64)(lifetime*initial_spawn_rate);
+    U64 new_spawned = (U64)(new_lifetime*initial_spawn_rate);
+    if (new_spawned > particle_count)
+        new_spawned = particle_count;
+
+    // initial spawning of particles
+    while (spawned < new_spawned) {
+        ef->spawned[spawned] = random_effect_particle();
+        spawned += 1;
+    }
+
+    bool spawning = ef->lifetime < stats->total_lifetime;
+    bool all_dead = true;
+
+    // update spawned
+    for (U64 i = 0; i < new_spawned; ++i) {
+        EffectParticle p = ef->spawned[i];
+
+        F32 total_p_lifetime = compute_range(stats->particle_lifetime, stats->particle_lifetime_variance, p.lifetime_delta);
+        U64 progress_change = (U64) (65536.0f / total_p_lifetime);
+        U64 old_progress = p.progress; 
+        U64 new_progress = old_progress + progress_change;
+        if (new_progress >= 65536ul) {
+            if (spawning) {
+                all_dead = false;
+                p = random_effect_particle();
+            } else {
+                p.flags &= (~PARTICLE_FLAGS_ALIVE);
+            }
+        } else {
+            all_dead = false;
+            p.progress = (U16) new_progress;
+        }
+
+        ef->spawned[i] = p;
+    }
+
+    // if all particles are dead
+    if (all_dead) {
+        destroy_entity(entity_ref(e));
+    }
+
+    ef->lifetime += 1.0;
+}
+
+void draw_effect(Entity* e) {
+    Effect* ef = arena_lookup_Effect(&st.effects, e->data_ref);
+    EffectParticle* particles = ef->spawned;
+    EffectStats* stats = ef->stats;
+
+    for (U64 i = 0; i < stats->particle_count; ++i) {
+        EffectParticle p = particles[i];
+        if (p.flags & PARTICLE_FLAGS_ALIVE) {
+            F32 progress = (F32)p.progress / 65536.0f;
+            F32 time = progress * stats->particle_lifetime;
+
+            F32 angle = compute_range(ef->angle, stats->angle_variance, p.angle_delta);
+            F32 speed = compute_range(stats->initial_speed, stats->speed_variance, p.speed_delta);
+            F32 offset = time * speed + time*time*0.5f*stats->acceleration;
+            Vector2 pos = vector2_add(e->position, vector2_dir(angle, offset));
+            F32 size = compute_range(stats->size, stats->size_variance, p.size_delta);
+
+            draw_rounded_rectangle(NULL, pos, (Vector2) { size, size }, stats->roundness, stats->colour);
+        }
+    }
+}
+
+EffectRef insert_effect(EffectInit init) {
+    Effect ef = {
+        .stats = init.stats,
+        .angle = init.angle,
+        .follow = init.follow,
+        .lifetime = 0.0f,
+        .spawned = malloc(init.stats->particle_count * sizeof(EffectParticle)),
+    };
+    
+    memset(ef.spawned, 0, init.stats->particle_count * sizeof(EffectParticle));
+
+    Entity et = {
+        .entity_type = ENTITY_TYPE_EFFECT,
+        .collision_roundness = 0.0f,
+        .collision_size = { 0.0f, 0.0f },
+        .entity_flags = ENTITY_FLAGS_COLLISION_NONE | init.layer,
+        .position = init.position,
+        .on_collide = NULL,
+        .draw = draw_effect,
+        .update = update_effect,
+        .destroy = destroy_effect,
+    };
+
+    EffectRef ef_ref = arena_insert_Effect(&st.effects, ef);
+    et.data_ref = ef_ref;
+    EntityRef et_ref = insert_entity(et);
+    arena_lookup_Effect(&st.effects, ef_ref)->e = et_ref;
+
+    return et_ref;
+}
+
+void destroy_effect(Entity* e) {
+    Effect* ef = arena_lookup_Effect(&st.effects, e->data_ref);
+    free(ef->spawned);
+    arena_remove_Effect(&st.effects, e->data_ref);
+}
+
 //void draw_general_hud();

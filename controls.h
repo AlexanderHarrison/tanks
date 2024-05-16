@@ -20,6 +20,7 @@ typedef enum {
     TrainingInput_FrameAdvance,
     TrainingInput_SaveState,
     TrainingInput_LoadState,
+    TrainingInput_ToggleMenu,
 } TrainingInput;
 
 typedef struct {
@@ -46,9 +47,9 @@ typedef struct {
     PlayerInputMapping map[TANK_CONTROLS_COUNT];
 } PlayerControls;
 
-#define TRAINING_CONTROLS_COUNT 9
+#define TRAINING_CONTROLS_COUNT 6
 typedef struct {
-    PlayerInputMapping map[5];
+    PlayerInputMapping map[TRAINING_CONTROLS_COUNT];
 } TrainingControls;
 
 PlayerControls player1_controls = {
@@ -86,6 +87,7 @@ TrainingControls training_controls = {
         { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_F }, // frame advance
         { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_U }, // save state
         { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_I }, // load state
+        { .source_type = PlayerInputSourceType_Keyboard, .keyboard_input = KEY_TAB }, // toggle menu
     }
 };
 
