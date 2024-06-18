@@ -4,13 +4,18 @@
 Animation test_animation;
 Animation shoot_animation;
 TankStats default_tank;
-EffectStats bullet_hit_wall_effect_stats;
-EffectStats hit_tank_effect_stats;
+
+EffectStats* bullet_hit_wall_effect_stats;
+U32 bullet_hit_wall_effect_stats_count;
+EffectStats* hit_tank_effect_stats;
+U32 hit_tank_effect_stats_count;
 
 #include <dlfcn.h>
 #include <sys/stat.h>
 void* hot_reload_lib = NULL;
-U64 hot_reload_changed_time = 0;
+I64 hot_reload_changed_time = 0;
+
+#define RELOAD(sym) sym = *(typeof(sym)*) dlsym(hot_reload_lib, #sym)
 
 static void check_hot_reload() {
     struct stat lib_stat;
@@ -27,8 +32,6 @@ static void check_hot_reload() {
     return;
 
 reload:
-    printf("hot reloading\n");
-
     hot_reload_changed_time = lib_stat.st_mtime;
     hot_reload_lib = dlopen("./libhot_reload.so", RTLD_LAZY);
 
@@ -37,14 +40,13 @@ reload:
         exit(1);
     }
 
-    test_animation = *(Animation*) dlsym(hot_reload_lib, "test_animation");
-    shoot_animation = *(Animation*) dlsym(hot_reload_lib, "shoot_animation");
-    default_tank = *(TankStats*) dlsym(hot_reload_lib, "default_tank");
-    bullet_hit_wall_effect_stats = *(EffectStats*) dlsym(hot_reload_lib, "bullet_hit_wall_effect_stats");
-    hit_tank_effect_stats = *(EffectStats*) dlsym(hot_reload_lib, "hit_tank_effect_stats");
-
-    printf("tank size: %f\n", default_tank.size);
-
+    RELOAD(test_animation);
+    RELOAD(shoot_animation);
+    RELOAD(default_tank);
+    RELOAD(bullet_hit_wall_effect_stats);
+    RELOAD(bullet_hit_wall_effect_stats_count);
+    RELOAD(hit_tank_effect_stats);
+    RELOAD(hit_tank_effect_stats_count);
 }
 
 int main(void) {
@@ -366,10 +368,6 @@ SceneTransition run_menu(const MenuItem* menu, U32 menu_len) {
 }
 
 SceneTransition run_multiplayer() {
-    int games[3] = { 0, 0, 0};
-    int g_idx = 0;
-
-start:
     reset_game_state(&st);
     insert_borders();
 
@@ -411,26 +409,14 @@ start:
     };
 
     while (true) {
+        run_debug_update();
         run_entity_updates();
         run_collision_checks();
 
         BeginDrawing();
         ClearBackground((Color) { 200, 200, 200, 255 });
-        draw_entities();
 
-        Tank* p1_t = arena_lookup_Tank(&st.tanks, p1);
-        Tank* p2_t = arena_lookup_Tank(&st.tanks, p2);
-
-        Vector2 p = { 50.0f, 50.0f };
-        for (U64 i = 0; i < 3; ++i) {
-            Color c = {255, 255, 255, 255};
-            if (games[i] == 1)
-                c = p1_t->body_colour;
-            else if (games[i] == 2)
-                c = p2_t->body_colour;
-            draw_circle(NULL, p, 20.0f, c);
-            p = vector2_add(p, (Vector2) { 50.0f, 0.0f });
-        }
+        draw_game_state();
 
         EndDrawing();
 
@@ -441,23 +427,8 @@ start:
             break;
         }
 
-        if (st.finish) {
-            bool p1_l = p1_t->health <= 0.0f;
-            bool p2_l = p2_t->health <= 0.0f;
-
-            if (!p1_l && p2_l) {
-                games[g_idx] = 1;
-                g_idx++;
-            } if (p1_l && !p2_l) {
-                games[g_idx] = 2;
-                g_idx++;
-            }
-
-            if (g_idx == 3)
-                break;
-            else
-                goto start;
-        }
+        if (st.finish)
+            break;
 
         if (lockout > 0)
             lockout--;
@@ -550,7 +521,8 @@ SceneTransition run_singleplayer() {
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
-        draw_entities();
+
+        draw_game_state();
 
         EndDrawing();
 
@@ -662,6 +634,10 @@ SceneTransition run_training() {
         if (training_input_pressed(&training_controls, TrainingInput_ToggleMenu))
             menu_showing = !menu_showing;
 
+        // debug update ----------------------------------------------
+
+        run_debug_update();
+
         // game loop ----------------------------------------------------
 
         if (playing || frame_advance) {
@@ -672,7 +648,8 @@ SceneTransition run_training() {
 
         BeginDrawing();
         ClearBackground(RAYWHITE);
-        draw_entities();
+
+        draw_game_state();
         
         if (menu_showing)
             draw_training_menu(&tm_state);
@@ -934,6 +911,77 @@ bool colliding(Entity* a, Entity* b) {
     return false;
 }
 
+void run_debug_update() {
+    if (IsMouseButtonPressed(1)) {
+        st.debug_state.follow = NULL_REF;
+    }
+
+    if (!is_null_ref(st.debug_state.follow)) {
+        Entity* follow = lookup_entity(&st, st.debug_state.follow);
+
+        // stop following if entity was destroyed
+        if (follow == NULL) {
+            st.debug_state.follow = NULL_REF;
+            goto after_follow;
+        }
+
+        // rest of follow update 
+    }
+
+after_follow:
+
+    if (IsMouseButtonPressed(0)) {
+        Vector2 click_pos = GetMousePosition();
+        ArenaIter iter = arena_iter(&st.entities.tracking);
+
+        // follow closest entity to mouse click
+        EntityRef closest = NULL_REF;
+        F32 closest_dist = 10000000.0f;
+        while (1) {
+            EntityRef k = arena_iter_next(&iter);
+            if (k.idx == ARENA_INVALID_IDX) break;
+
+            Entity* e = lookup_entity(&st, k);
+            F32 dist = distance(click_pos, e->position);
+            if (dist < closest_dist) {
+                closest = k;
+                closest_dist = dist;
+            }
+        }
+
+
+        if (closest_dist < 5000.0f) {
+            st.debug_state.follow = closest;
+        } else {
+            st.debug_state.follow = NULL_REF;
+        }
+    }
+}
+
+void draw_game_state() {
+    Entity* debug_follow = NULL;
+
+    if (!is_null_ref(st.debug_state.follow)) {
+        debug_follow = lookup_entity(&st, st.debug_state.follow);
+    }
+
+    if (debug_follow != NULL) {
+        Camera2D debug_cam;
+        debug_cam.target = debug_follow->position;
+        debug_cam.offset = (Vector2) { SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 };
+        debug_cam.rotation = 0.0f;
+        debug_cam.zoom = 2.0f;
+        
+        BeginMode2D(debug_cam);
+    }
+
+    draw_entities();
+
+    if (debug_follow != NULL) {
+        EndMode2D();
+    }
+}
+
 void draw_entities() {
     U64 layers = 1u << ENTITY_FLAGS_RENDER_LAYER_BITS;
     for (U64 i = 0; i < layers; ++i) {
@@ -1106,12 +1154,13 @@ void hit_tank(Entity* e, Tank* t, HitInfo info) {
     t->state_data.hitstop.timer = 5;
 
     F32 angle = vector2_angle(info.knockback);
-    insert_effect((EffectInit) {
-        .layer = ENTITY_FLAGS_RENDER_LAYER_1,
-        .position = info.hit_position,
-        .angle = angle,
-        .stats = &hit_tank_effect_stats,
-    });
+    for (U32 i = 0; i < hit_tank_effect_stats_count; ++i) {
+        insert_effect((EffectInit) {
+            .position = info.hit_position,
+            .angle = angle,
+            .stats = &hit_tank_effect_stats[i],
+        });
+    }
 }
 
 static void advance_tank_state(Entity* e, Tank* t, U64 control_states) {
@@ -1329,12 +1378,13 @@ void handle_collision_bullet(Entity* this, Entity* other) {
         Vector2 pos = vector2_add(this->position, eject);
         F32 angle = vector2_angle(eject);
 
-        insert_effect((EffectInit) {
-            .layer = ENTITY_FLAGS_RENDER_LAYER_1,
-            .position = pos,
-            .angle = angle,
-            .stats = &bullet_hit_wall_effect_stats,
-        });
+        for (U32 i = 0; i < bullet_hit_wall_effect_stats_count; ++i) {
+            insert_effect((EffectInit) {
+                .position = pos,
+                .angle = angle,
+                .stats = &bullet_hit_wall_effect_stats[i],
+            });
+        }
         destroy_entity(entity_ref(this));
     } else if (other->entity_type & ENTITY_TYPE_TANK) {
         if (arena_key_equal(other->data_ref, b->owner))
@@ -1410,6 +1460,7 @@ void draw_player_hud(Entity* e) {
 }
 
 void draw_training_menu(TrainingMenuState* tm_state) {
+    (void)(tm_state);
     DrawRectangle(0, 0, 200, 200, BLACK);
 }
 
@@ -1636,7 +1687,7 @@ EffectRef insert_effect(EffectInit init) {
         .entity_type = ENTITY_TYPE_EFFECT,
         .collision_roundness = 0.0f,
         .collision_size = { 0.0f, 0.0f },
-        .entity_flags = ENTITY_FLAGS_COLLISION_NONE | init.layer,
+        .entity_flags = ENTITY_FLAGS_COLLISION_NONE | init.stats->render_layer,
         .position = init.position,
         .on_collide = NULL,
         .draw = draw_effect,

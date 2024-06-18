@@ -499,6 +499,7 @@ typedef struct {
     F32 initial_spawn_rate;
 
     Color colour;
+    U32 render_layer;
 } EffectStats;
 
 typedef struct {
@@ -543,9 +544,8 @@ void update_effect(Entity* e);
 
 typedef struct {
     Vector2 position;
-    U32 layer;
     F32 angle;
-    EntityRef follow; // may be a null ref
+    EntityRef follow; // may be NULL_REF
     EffectStats* stats;
 } EffectInit;
 
@@ -556,15 +556,21 @@ EffectRef effect_ref(Effect* t);
 // State ------------------------------------------------
 
 typedef struct {
+    EntityRef follow;
+} DebugState;
+
+typedef struct {
     Arena_Entity entities;
     Arena_Tank tanks;
     Arena_Bullet bullets;
     Arena_Effect effects;
 
     bool finish;
+
+    DebugState debug_state;
 } GameState;
 
-GameState init_game_state(void) {
+GameState init_game_state() {
     return (GameState) {
         .entities = arena_create_Entity(),
         .tanks = arena_create_Tank(),
@@ -572,8 +578,15 @@ GameState init_game_state(void) {
         .effects = arena_create_Effect(),
 
         .finish = false,
+
+        .debug_state = {
+            .follow = NULL_REF
+        }
     };
 }
+
+void run_debug_update();
+void draw_game_state();
 
 // assumes that new is initialized
 void copy_game_state(GameState* old, GameState* new) {
@@ -634,6 +647,7 @@ void draw_player_hud(Entity* e);
 //void draw_general_hud();
 
 typedef struct {
+    int x;
 } TrainingMenuState;
 
 void draw_training_menu(TrainingMenuState* tm_state);

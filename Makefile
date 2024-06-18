@@ -11,7 +11,10 @@ LINK_FLAGS := -lraylib -lm -ldl
 
 export GCC_COLORS = warning=01;33
 
-build: $(TRACK)
+hot_reload.so: hot_reload.c
+	gcc $(WARN_FLAGS) $(BASE_FLAGS) -fPIC -shared hot_reload.c $(LINK_FLAGS) -o libhot_reload.so
+
+build: $(TRACK) hot_reload.so
 	gcc $(WARN_FLAGS) $(BASE_FLAGS) $(FILES) $(LINK_FLAGS) -o$(OUT)
 
 run: build
@@ -25,6 +28,6 @@ debug: $(TRACK)
 	gcc $(WARN_FLAGS) -ggdb $(BASE_FLAGS) $(FILES) $(LINK_FLAGS)
 	gdb ./$(OUT)
 
-hot_reload: build hot_reload.c
+hot_reload: build hot_reload.so
 	./$(OUT) & watch gcc $(WARN_FLAGS) $(BASE_FLAGS) -fPIC -shared hot_reload.c $(LINK_FLAGS) -o libhot_reload.so
 
